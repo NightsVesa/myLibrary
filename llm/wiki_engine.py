@@ -126,3 +126,56 @@ def ingest_note(
     _append_log(wiki, "ingest", title, f"Created {filename}")
 
     return page_path
+
+
+def _pick_relevant_pages(
+    question: str,
+    *,
+    wiki_dir: Path | None = None,
+    top_n: int = 5,
+) -> list[Path]:
+    wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
+    index_path = wiki / "index.md"
+    if not index_path.exists():
+        return []
+
+    q_words = set(question.lower().split())
+    scored: list[tuple[float, Path]] = []
+
+    for md in wiki.glob("summary_*.md"):
+        text = md.read_text(encoding="utf-8").lower()
+        hits = sum(1 for w in q_words if w in text)
+        if hits > 0:
+            scored.append((hits, md))
+
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [path for _, path in scored[:top_n]]
+
+
+def query_wiki(
+    question: str,
+    config: LLMConfig,
+    *,
+    wiki_dir: Path | None = None,
+) -> Generator[str, None, None]:
+    wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
+
+    pages = _pick_relevant_pages(question, wiki_dir=wiki)
+    if not pages:
+        yield "Wiki is empty — no pages to search."
+        return
+
+    context_parts: list[str] = []
+    for p in pages:
+        text = p.read_text(encoding="utf-8")
+        context_parts.append(f"=== {p.name} ===\n{text}\n")
+    context = "\n".join(context_parts)
+
+    messages = [
+        Message(role="system", content=QUERY_SYSTEM),
+        Message(
+            role="user",
+            content=f"Wiki pages:\n\n{context}\n\n---\n\nQuestion: {question}",
+        ),
+    ]
+    yield from chat_stream(config, messages)

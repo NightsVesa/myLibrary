@@ -4,7 +4,7 @@ from unittest.mock import patch
 from datetime import datetime
 
 from llm.client import LLMConfig
-from llm.wiki_engine import ingest_note, _parse_ingest_response, _update_index, _append_log
+from llm.wiki_engine import ingest_note, _parse_ingest_response, _update_index, _append_log, query_wiki, _pick_relevant_pages
 
 
 @pytest.fixture
@@ -102,3 +102,45 @@ This note discusses AI concepts.
     assert "AI concepts" in content
     assert (wiki_dir / "index.md").exists()
     assert (wiki_dir / "log.md").exists()
+
+
+def test_pick_relevant_pages_by_keyword(wiki_dir):
+    (wiki_dir / "summary_ai.md").write_text("# AI\nArtificial intelligence overview.", encoding="utf-8")
+    (wiki_dir / "summary_cooking.md").write_text("# Cooking\nHow to make pasta.", encoding="utf-8")
+    _update_index(wiki_dir, "summary_ai.md", "AI", "Artificial intelligence overview")
+    _update_index(wiki_dir, "summary_cooking.md", "Cooking", "How to make pasta")
+
+    pages = _pick_relevant_pages("artificial intelligence", wiki_dir=wiki_dir, top_n=5)
+    filenames = [p.name for p in pages]
+    assert "summary_ai.md" in filenames
+
+
+def test_pick_relevant_pages_returns_max_n(wiki_dir):
+    for i in range(10):
+        name = f"summary_page_{i}.md"
+        (wiki_dir / name).write_text(f"# Page {i}\nCommon keyword here.", encoding="utf-8")
+        _update_index(wiki_dir, name, f"Page {i}", "Common keyword here")
+
+    pages = _pick_relevant_pages("common keyword", wiki_dir=wiki_dir, top_n=3)
+    assert len(pages) <= 3
+
+
+def test_pick_relevant_pages_empty_wiki(wiki_dir):
+    pages = _pick_relevant_pages("anything", wiki_dir=wiki_dir, top_n=5)
+    assert pages == []
+
+
+def test_query_wiki_returns_generator(wiki_dir, config):
+    (wiki_dir / "index.md").write_text("# Wiki Index\n\n- [AI](summary_ai.md) — AI overview\n", encoding="utf-8")
+    (wiki_dir / "summary_ai.md").write_text("# AI\nArtificial intelligence is ...", encoding="utf-8")
+
+    chunks = ["This ", "is ", "the answer."]
+    with patch("llm.wiki_engine.chat_stream", return_value=iter(chunks)):
+        result = list(query_wiki("What is AI?", config, wiki_dir=wiki_dir))
+    assert result == chunks
+
+
+def test_query_wiki_empty_wiki(wiki_dir, config):
+    result = list(query_wiki("anything?", config, wiki_dir=wiki_dir))
+    assert len(result) == 1
+    assert "empty" in result[0].lower() or "空" in result[0]
