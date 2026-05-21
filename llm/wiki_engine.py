@@ -3,6 +3,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Generator
 
+import threading
+
 import config as app_config
 from llm.client import LLMConfig, Message, chat, chat_stream
 from llm.prompts import INGEST_SYSTEM, QUERY_SYSTEM, INDEX_ENTRY_TEMPLATE, LOG_ENTRY_TEMPLATE
@@ -179,3 +181,22 @@ def query_wiki(
         ),
     ]
     yield from chat_stream(config, messages)
+
+
+def background_ingest(note_path: Path) -> None:
+    if not app_config.LLM_API_KEY:
+        return
+    config = LLMConfig(
+        api_base=app_config.LLM_API_BASE,
+        api_key=app_config.LLM_API_KEY,
+        model=app_config.LLM_MODEL,
+    )
+
+    def _worker():
+        try:
+            ingest_note(note_path, config)
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()

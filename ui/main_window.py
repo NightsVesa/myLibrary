@@ -12,6 +12,7 @@ from tkinterdnd2 import DND_FILES
 
 from config import APP_TITLE, BASE_DIR
 from storage.note_store import save_note
+from llm.wiki_engine import background_ingest
 from ui.cartoon_widgets import (
     FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT,
     hex_to_rgb as _hex_to_rgb_shared, make_card_png as _shared_card_png,
@@ -775,6 +776,7 @@ class MainWindow:
             try:
                 content = handler(p)
                 saved = save_note(content, title=p.stem)
+                background_ingest(saved)
                 ok.append(saved)
             except Exception as exc:
                 bad.append((p, str(exc)))
