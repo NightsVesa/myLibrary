@@ -62,7 +62,7 @@ def _force_step(
     fy = [0.0] * n
 
     # Repulsion: all-pairs Coulomb
-    k_r = 6000.0
+    k_r = 9000.0
     for i in range(n):
         xi, yi = nodes[i]["x"], nodes[i]["y"]
         for j in range(i + 1, n):
@@ -76,8 +76,8 @@ def _force_step(
             fy[j] -= (dy / dist) * force
 
     # Attraction: edges are springs
-    k_s = 0.05
-    rest = 130.0
+    k_s = 0.04
+    rest = 160.0
     for src, tgt in edges:
         i, j = idx.get(src), idx.get(tgt)
         if i is None or j is None:
@@ -120,8 +120,8 @@ def _layout(graph: Graph, width: float, height: float) -> list[dict]:
     for nd in graph.nodes:
         nodes.append({
             "id": nd.id,
-            "x": width / 2 + random.uniform(-80, 80),
-            "y": height / 2 + random.uniform(-80, 80),
+            "x": random.uniform(60, width - 60),
+            "y": random.uniform(60, height - 60),
         })
 
     edges = [(e.source, e.target) for e in graph.edges]
@@ -316,7 +316,12 @@ class _GraphWindow:
 
     def _on_scroll(self, e) -> None:
         factor = 1.08 if e.delta > 0 else 0.92
-        self._scale = max(0.25, min(3.0, self._scale * factor))
+        new_scale = max(0.25, min(3.0, self._scale * factor))
+        # Zoom toward mouse cursor, not center
+        ratio = new_scale / self._scale
+        self._pan["x"] = e.x - (e.x - self._pan["x"]) * ratio
+        self._pan["y"] = e.y - (e.y - self._pan["y"]) * ratio
+        self._scale = new_scale
         self._draw()
 
     def _on_resize(self, e) -> None:
