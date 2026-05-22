@@ -212,8 +212,9 @@ def _collect_existing_slugs(wiki_dir: Path) -> tuple[set[str], set[str]]:
     return entity_slugs, concept_slugs
 
 
-def _slug_list_for_prompt(wiki_dir: Path) -> str:
-    entity_slugs, concept_slugs = _collect_existing_slugs(wiki_dir)
+def _slug_list_for_prompt(
+    entity_slugs: set[str], concept_slugs: set[str],
+) -> str:
     parts: list[str] = []
     if entity_slugs:
         parts.append(f"Existing entity slugs: [{', '.join(sorted(entity_slugs))}]")
@@ -239,7 +240,8 @@ def ingest_note(
     source_text = note_path.read_text(encoding="utf-8")
     title = note_path.stem.replace("_", " ")
     catalog = _index_catalog_for_prompt(wiki)
-    slug_list = _slug_list_for_prompt(wiki)
+    entity_slugs_on_disk, concept_slugs_on_disk = _collect_existing_slugs(wiki)
+    slug_list = _slug_list_for_prompt(entity_slugs_on_disk, concept_slugs_on_disk)
 
     user_parts = [
         f"Source note title: {title}",
@@ -262,8 +264,6 @@ def ingest_note(
         f"---\nsource: {note_path.name}\n"
         f"created: {datetime.now().strftime('%Y-%m-%d')}\n---\n\n"
     )
-
-    entity_slugs_on_disk, concept_slugs_on_disk = _collect_existing_slugs(wiki)
 
     def _resolve_slug(item: dict, prefix: str) -> str:
         existing = entity_slugs_on_disk if prefix == "entities" else concept_slugs_on_disk
