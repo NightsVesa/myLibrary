@@ -8,7 +8,12 @@ import threading
 
 import config as app_config
 from llm.client import LLMConfig, Message, chat, chat_stream
-from llm.prompts import INGEST_SYSTEM, QUERY_SYSTEM, INDEX_ENTRY_TEMPLATE, LOG_ENTRY_TEMPLATE
+from llm.prompts import (
+    INGEST_EXTRACT_SYSTEM,
+    MERGE_PAGE_SYSTEM,
+    QUERY_SYSTEM,
+    LOG_ENTRY_TEMPLATE,
+)
 
 
 def _slugify(name: str) -> str:
@@ -25,60 +30,116 @@ def _slugify(name: str) -> str:
 
 
 @dataclass(frozen=True)
-class IngestResult:
+class ExtractResult:
     summary: str
-    entities: list[str]
-    connections: list[str]
+    entities: list[dict]
+    concepts: list[dict]
+    update_targets: list[str]
 
 
-def _parse_ingest_response(raw: str) -> IngestResult:
-    summary = ""
-    entities: list[str] = []
-    connections: list[str] = []
-    current_section = None
+@dataclass(frozen=True)
+class IndexEntry:
+    title: str
+    filename: str
+    summary: str
 
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("## Summary"):
-            current_section = "summary"
-            continue
-        elif stripped.startswith("## Entities"):
-            current_section = "entities"
-            continue
-        elif stripped.startswith("## Connections"):
-            current_section = "connections"
-            continue
 
-        if current_section == "summary":
-            summary += line + "\n"
-        elif current_section == "entities" and stripped.startswith("- "):
-            entities.append(stripped[2:].strip())
-        elif current_section == "connections" and stripped.startswith("- "):
-            connections.append(stripped[2:].strip())
-
-    return IngestResult(
-        summary=summary.strip(),
-        entities=entities,
-        connections=connections,
+def _parse_extract(raw: str) -> ExtractResult:
+    import json
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines)
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return ExtractResult("", [], [], [])
+    return ExtractResult(
+        summary=str(data.get("summary", "")),
+        entities=list(data.get("entities", [])),
+        concepts=list(data.get("concepts", [])),
+        update_targets=list(data.get("update_targets", [])),
     )
 
 
-def _update_index(wiki_dir: Path, filename: str, title: str, summary: str) -> None:
+def _merge_page(
+    target: Path,
+    *,
+    page_title: str,
+    contribution: str,
+    source_filename: str,
+    config: LLMConfig,
+) -> None:
+    existing = target.read_text(encoding="utf-8") if target.exists() else ""
+    user_content = (
+        f"Page title: {page_title}\n"
+        f"New source: {source_filename}\n\n"
+        f"=== Existing page content ===\n{existing or '(empty — this is a new page)'}\n\n"
+        f"=== New contribution from this source ===\n{contribution}\n"
+    )
+    messages = [
+        Message(role="system", content=MERGE_PAGE_SYSTEM),
+        Message(role="user", content=user_content),
+    ]
+    updated = chat(config, messages)
+    target.write_text(updated.rstrip() + "\n", encoding="utf-8")
+
+
+def _write_index(
+    wiki_dir: Path,
+    *,
+    sources: list[IndexEntry],
+    entities: list[IndexEntry],
+    concepts: list[IndexEntry],
+) -> None:
+    def _section(name: str, entries: list[IndexEntry]) -> str:
+        if not entries:
+            return f"## {name}\n\n_(none yet)_\n\n"
+        lines = [f"## {name}\n"]
+        for e in sorted(entries, key=lambda x: x.title.lower()):
+            lines.append(f"- [{e.title}]({e.filename}) — {e.summary}\n")
+        lines.append("\n")
+        return "".join(lines)
+
+    body = (
+        "# Wiki Index\n\n"
+        + _section("Sources", sources)
+        + _section("Entities", entities)
+        + _section("Concepts", concepts)
+    )
+    (wiki_dir / "index.md").write_text(body, encoding="utf-8")
+
+
+def _read_index_entries(
+    wiki_dir: Path,
+) -> tuple[list[IndexEntry], list[IndexEntry], list[IndexEntry]]:
+    sources: list[IndexEntry] = []
+    entities: list[IndexEntry] = []
+    concepts: list[IndexEntry] = []
     index_path = wiki_dir / "index.md"
-    header = "# Wiki Index\n\n"
-    entries: list[str] = []
-
-    if index_path.exists():
-        text = index_path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            if line.startswith("- [") and f"]({filename})" not in line:
-                entries.append(line + "\n")
-
-    one_line = summary.split("\n")[0][:80]
-    entries.append(INDEX_ENTRY_TEMPLATE.format(
-        title=title, filename=filename, summary=one_line,
-    ))
-    index_path.write_text(header + "".join(sorted(entries)), encoding="utf-8")
+    if not index_path.exists():
+        return sources, entities, concepts
+    current: list[IndexEntry] | None = None
+    for line in index_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## Sources"):
+            current = sources
+        elif line.startswith("## Entities"):
+            current = entities
+        elif line.startswith("## Concepts"):
+            current = concepts
+        elif current is not None and line.startswith("- ["):
+            try:
+                title = line[line.index("[") + 1:line.index("](")]
+                filename = line[line.index("](") + 2:line.index(")")]
+                summary = line.split("— ", 1)[1] if "— " in line else ""
+                current.append(IndexEntry(title, filename, summary))
+            except ValueError:
+                continue
+    return sources, entities, concepts
 
 
 def _append_log(wiki_dir: Path, operation: str, title: str, details: str) -> None:
@@ -102,6 +163,13 @@ def _wiki_filename(note_name: str) -> str:
     return f"summary_{stem}.md"
 
 
+def _index_catalog_for_prompt(wiki_dir: Path) -> str:
+    idx = wiki_dir / "index.md"
+    if not idx.exists():
+        return "(wiki is empty)"
+    return idx.read_text(encoding="utf-8")
+
+
 def ingest_note(
     note_path: Path,
     config: LLMConfig,
@@ -113,35 +181,77 @@ def ingest_note(
 
     source_text = note_path.read_text(encoding="utf-8")
     title = note_path.stem.replace("_", " ")
+    catalog = _index_catalog_for_prompt(wiki)
 
-    messages = [
-        Message(role="system", content=INGEST_SYSTEM),
+    extract_messages = [
+        Message(role="system", content=INGEST_EXTRACT_SYSTEM),
         Message(
             role="user",
-            content=f"Source note title: {title}\n\n---\n\n{source_text}",
+            content=(
+                f"Source note title: {title}\n\n"
+                f"=== Source ===\n{source_text}\n\n"
+                f"=== Current wiki index ===\n{catalog}\n"
+            ),
         ),
     ]
-    raw = chat(config, messages)
-    result = _parse_ingest_response(raw)
+    extracted = _parse_extract(chat(config, extract_messages))
 
-    filename = _wiki_filename(note_path.name)
-    page_path = wiki / filename
-
+    source_filename = _wiki_filename(note_path.name)
+    source_page = wiki / source_filename
     frontmatter = (
         f"---\nsource: {note_path.name}\n"
-        f"created: {datetime.now().strftime('%Y-%m-%d')}\n"
-        f"entities: {result.entities}\n---\n\n"
+        f"created: {datetime.now().strftime('%Y-%m-%d')}\n---\n\n"
     )
-    page_path.write_text(
-        frontmatter + f"# {title}\n\n{result.summary}\n",
+    source_page.write_text(
+        frontmatter + f"# {title}\n\n{extracted.summary}\n",
         encoding="utf-8",
     )
 
-    one_line = result.summary.split("\n")[0][:80]
-    _update_index(wiki, filename, title, one_line)
-    _append_log(wiki, "ingest", title, f"Created {filename}")
+    sources, entities, concepts = _read_index_entries(wiki)
+    sources = [e for e in sources if e.filename != source_filename]
+    sources.append(IndexEntry(
+        title=title,
+        filename=source_filename,
+        summary=(extracted.summary.split("\n")[0][:80] or "(no summary)"),
+    ))
 
-    return page_path
+    def _merge_and_register(
+        items: list[dict], prefix: str, registry: list[IndexEntry],
+    ) -> None:
+        for item in items:
+            slug = _slugify(item.get("slug") or item.get("name", ""))
+            if not slug:
+                continue
+            filename = f"{prefix}_{slug}.md"
+            target = wiki / filename
+            try:
+                _merge_page(
+                    target,
+                    page_title=item.get("name", slug),
+                    contribution=item.get("contribution", ""),
+                    source_filename=source_filename,
+                    config=config,
+                )
+            except Exception:
+                continue
+            registry[:] = [e for e in registry if e.filename != filename]
+            registry.append(IndexEntry(
+                title=item.get("name", slug),
+                filename=filename,
+                summary=(item.get("contribution", "").split("\n")[0][:80]),
+            ))
+
+    _merge_and_register(extracted.entities, "entity", entities)
+    _merge_and_register(extracted.concepts, "concept", concepts)
+
+    _write_index(wiki, sources=sources, entities=entities, concepts=concepts)
+    _append_log(
+        wiki, "ingest", title,
+        f"Created {source_filename}; touched {len(extracted.entities)} entities, "
+        f"{len(extracted.concepts)} concepts",
+    )
+
+    return source_page
 
 
 def _tokenize(text: str) -> set[str]:
@@ -171,7 +281,11 @@ def _pick_relevant_pages(
         return []
     scored: list[tuple[float, Path]] = []
 
-    for md in wiki.glob("summary_*.md"):
+    candidates: list[Path] = []
+    for pattern in ("summary_*.md", "entity_*.md", "concept_*.md"):
+        candidates.extend(wiki.glob(pattern))
+
+    for md in candidates:
         text = md.read_text(encoding="utf-8").lower()
         hits = sum(1 for t in q_tokens if t in text)
         if hits > 0:
