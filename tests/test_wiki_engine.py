@@ -7,6 +7,7 @@ from llm.wiki_engine import (
     ingest_note,
     query_wiki,
     _pick_relevant_pages,
+    _read_note_source,
     _slugify,
     _canonical_slug,
     _parse_extract,
@@ -88,6 +89,21 @@ def test_canonical_slug_empty_returns_empty():
 def test_canonical_slug_cjk_no_false_positive():
     # Different CJK characters should not match.
     assert _canonical_slug("学习", {"机器", "深度"}) == "学习"
+
+
+# --- _read_note_source ----------------------------------------------------
+
+def test_read_note_source_md(tmp_path):
+    note = tmp_path / "t.md"
+    note.write_text("# Hello", encoding="utf-8")
+    assert _read_note_source(note) == "# Hello"
+
+
+def test_read_note_source_unsupported_raises(tmp_path):
+    note = tmp_path / "t.txt"
+    note.write_text("hello")
+    with pytest.raises(ValueError, match="unsupported"):
+        _read_note_source(note)
 
 
 # --- _parse_extract --------------------------------------------------------

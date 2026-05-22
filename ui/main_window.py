@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageTk
 from tkinterdnd2 import DND_FILES
 
 from config import APP_TITLE, ASSETS_DIR
-from storage.note_store import save_note
+from storage.note_store import save_raw_file
 from llm.wiki_engine import background_ingest
 from ui.cartoon_widgets import (
     FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT,
@@ -771,13 +771,11 @@ class MainWindow:
             if not p.exists():
                 bad.append((p, "文件不存在"))
                 continue
-            handler = UPLOAD_HANDLERS.get(p.suffix.lower())
-            if handler is None:
+            if p.suffix.lower() not in UPLOAD_HANDLERS:
                 bad.append((p, f"不支持的格式 {p.suffix}"))
                 continue
             try:
-                content = handler(p)
-                saved = save_note(content, title=p.stem)
+                saved = save_raw_file(p)
                 background_ingest(saved)
                 ok.append(saved)
             except Exception as exc:

@@ -228,6 +228,19 @@ def _slug_list_for_prompt(
     return "\n".join(parts)
 
 
+def _read_note_source(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".md":
+        return path.read_text(encoding="utf-8")
+    if suffix == ".docx":
+        from converter.docx_converter import docx_to_markdown
+        return docx_to_markdown(path)
+    if suffix == ".pdf":
+        from converter.pdf_converter import pdf_to_markdown
+        return pdf_to_markdown(path)
+    raise ValueError(f"unsupported note format: {suffix}")
+
+
 def ingest_note(
     note_path: Path,
     config: LLMConfig,
@@ -237,7 +250,7 @@ def ingest_note(
     wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
     _ensure_subdirs(wiki)
 
-    source_text = note_path.read_text(encoding="utf-8")
+    source_text = _read_note_source(note_path)
     title = note_path.stem.replace("_", " ")
     catalog = _index_catalog_for_prompt(wiki)
     entity_slugs_on_disk, concept_slugs_on_disk = _collect_existing_slugs(wiki)
