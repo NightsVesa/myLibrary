@@ -25,7 +25,7 @@ from ui.search_tab import SearchTab
 from ui.chat_tab import ChatTab
 
 PET_DIR = ASSETS_DIR
-PET_STATES = ("idle", "attack", "happy", "sleep")
+PET_STATES = ("idle", "attack", "happy", "sleep", "eat")
 TRANSPARENT = "#ff00ff"
 
 # ── Cartoon Sky-Blue palette (lifted from the HTML UI kit) ──────────────────
@@ -485,6 +485,14 @@ class MainWindow:
                 else:
                     dx = math.sin((t - 0.14) * 28) * 4.0
                     dy = math.sin((t - 0.14) * 14) * 2.5
+            elif s == "eat":
+                # Gentle float + subtle nibble bob
+                dy = math.sin(t * 1.8) * 5.0
+                dx = math.sin(t * 0.9) * 1.5
+                # small chomp: faster vertical hop every ~0.6 s
+                chomp = math.sin(t * 10.5)
+                if chomp > 0.7:
+                    dy -= (chomp - 0.7) * 4.0
             elif s == "sleep":
                 if t < 0.35:
                     p = t / 0.35
@@ -807,13 +815,12 @@ class MainWindow:
     # ── ingest feedback ────────────────────────────────────────────────────
 
     def _ingest_with_animation(self, paths: list[Path]) -> None:
-        """Start persistent happy animation, ingest every path in
-        background, then pop a cartoon toast with the result."""
-        self._set_state("happy", auto_end=False)
+        """Start eat animation, ingest every path in background,
+        then pop a cartoon toast with the result."""
+        self._set_state("eat")
 
         def _worker():
             ok, err = 0, 0
-            last_title = ""
             from llm.client import LLMConfig
             from llm.wiki_engine import ingest_note as _ingest
             import config as _cfg
@@ -825,26 +832,20 @@ class MainWindow:
             for p in paths:
                 try:
                     _ingest(p, llm_cfg)
-                    last_title = p.stem.replace("_", " ")
                     ok += 1
                 except Exception:
                     _err_log.exception("ingest failed for %s", p)
                     err += 1
-            self.root.after(0, lambda: self._end_happy_animated(ok, err, last_title))
+            self.root.after(0, lambda: self._end_eat_animated(ok, err))
 
-        self._happy_persist = True
-        if self._happy_after_id is not None:
-            self.root.after_cancel(self._happy_after_id)
-            self._happy_after_id = None
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 
-    def _end_happy_animated(self, ok: int, err: int, title: str) -> None:
-        self._happy_persist = False
-        self._end_happy()
-        self._show_ingest_toast(ok, err, title)
+    def _end_eat_animated(self, ok: int, err: int) -> None:
+        self._set_state("idle")
+        self._show_ingest_toast(ok, err)
 
-    def _show_ingest_toast(self, ok: int, err: int, title: str) -> None:
+    def _show_ingest_toast(self, ok: int, err: int) -> None:
         """Cartoon speech bubble near the pet, auto-dismiss after 4 s."""
         rx, ry = self.root.winfo_x(), self.root.winfo_y()
         bw, bh = 260, 100
