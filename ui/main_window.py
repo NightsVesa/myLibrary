@@ -818,10 +818,14 @@ class MainWindow:
 
     # ── ingest feedback ────────────────────────────────────────────────────
 
+    MIN_EAT_MS = 2500  # keep eat animation for at least 2.5 s
+
     def _ingest_with_animation(self, paths: list[Path]) -> None:
         """Start eat animation, ingest every path in background,
         then pop a cartoon toast with the result."""
         self._set_state("eat")
+
+        t0 = time.monotonic()
 
         def _worker():
             ok, err = 0, 0
@@ -840,7 +844,10 @@ class MainWindow:
                 except Exception:
                     _err_log.exception("ingest failed for %s", p)
                     err += 1
-            self.root.after(0, lambda: self._end_eat_animated(ok, err))
+            # Ensure minimum animation duration.
+            elapsed = int((time.monotonic() - t0) * 1000)
+            delay = max(0, MIN_EAT_MS - elapsed)
+            self.root.after(delay, lambda: self._end_eat_animated(ok, err))
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
@@ -850,11 +857,11 @@ class MainWindow:
         self._show_ingest_toast(ok, err)
 
     def _show_ingest_toast(self, ok: int, err: int) -> None:
-        """Cartoon speech bubble near the pet, auto-dismiss after 4 s."""
+        """Cartoon card toast above the pet, auto-dismiss after 5 s."""
+        bw, bh = 260, 90
         rx, ry = self.root.winfo_x(), self.root.winfo_y()
-        bw, bh = 240, 110
         bx = max(0, rx + self.window_w // 2 - bw // 2)
-        by = max(0, ry - bh - 14)
+        by = max(0, ry - bh - 16)
 
         toast = tk.Toplevel(self.root)
         toast.overrideredirect(True)
@@ -863,36 +870,26 @@ class MainWindow:
         toast.wm_attributes("-transparentcolor", TRANSPARENT)
         toast.geometry(f"{bw}x{bh}+{bx}+{by}")
 
-        c = tk.Canvas(
+        # ── PIL card with drop shadow (same style as panels) ────────────────
+        card = _shared_card_png(bw, bh, 16, "#fffdf5", "#e6c85c", "#e6c85c", 5)
+        self._toast_bg_img = ImageTk.PhotoImage(card)
+
+        cv = tk.Canvas(
             toast, width=bw, height=bh,
             bg=TRANSPARENT, highlightthickness=0, borderwidth=0,
         )
-        c.pack()
+        cv.pack()
+        cv.create_image(0, 0, image=self._toast_bg_img, anchor="nw")
 
-        body_r, edge_c = "#fff9e6", "#e6c85c"
-        # Bubble body (leave room for tail)
-        c.create_polygon(
-            _round_rect_points(0, 0, bw, bh - 14, 18),
-            smooth=True, fill=body_r, outline=edge_c, width=3,
-        )
-        # Triangle tail
-        tail_cx = bw // 2
-        c.create_polygon(
-            tail_cx - 10, bh - 14,
-            tail_cx + 10, bh - 14,
-            tail_cx, bh,
-            fill=body_r, outline=edge_c, width=3,
+        cv.create_text(
+            bw // 2, 28, text="Wiki 更新完成",
+            fill=TEXT_MAIN, font=("Microsoft YaHei", 11, "bold"),
         )
 
-        c.create_text(
-            bw // 2, 32, text="Wiki 更新",
-            fill="#2c3e50", font=("Microsoft YaHei", 12, "bold"),
-        )
         status = f"ok: {ok} 成功" + (f", {err} 失败" if err else "")
-        # Use a lighter secondary color for the status line
-        c.create_text(
-            bw // 2, 62, text=status,
-            fill="#4a5568", font=("Microsoft YaHei", 9),
+        cv.create_text(
+            bw // 2, 56, text=status,
+            fill=TEXT_LIGHT, font=("Microsoft YaHei", 9),
         )
 
         def _dismiss():
@@ -901,8 +898,7 @@ class MainWindow:
             except tk.TclError:
                 pass
         toast.bind("<Button-1>", lambda _e: _dismiss())
-        # Schedule on root so the timer fires even if toast loses focus.
-        self.root.after(4000, _dismiss)
+        self.root.after(5000, _dismiss)
 
     # ══ end ingest feedback ════════════════════════════════════════════════
 
