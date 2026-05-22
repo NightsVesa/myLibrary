@@ -3,11 +3,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Generator
 
+import re as _re
 import threading
 
 import config as app_config
 from llm.client import LLMConfig, Message, chat, chat_stream
 from llm.prompts import INGEST_SYSTEM, QUERY_SYSTEM, INDEX_ENTRY_TEMPLATE, LOG_ENTRY_TEMPLATE
+
+
+def _slugify(name: str) -> str:
+    text = name.strip().lower()
+    out_chars: list[str] = []
+    for ch in text:
+        if ch.isalnum() or "一" <= ch <= "鿿":
+            out_chars.append(ch)
+        else:
+            out_chars.append("-")
+    slug = "".join(out_chars)
+    slug = _re.sub(r"-+", "-", slug).strip("-")
+    return slug or "untitled"
 
 
 @dataclass(frozen=True)

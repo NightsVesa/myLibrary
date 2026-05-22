@@ -144,3 +144,26 @@ def test_query_wiki_empty_wiki(wiki_dir, config):
     result = list(query_wiki("anything?", config, wiki_dir=wiki_dir))
     assert len(result) == 1
     assert "empty" in result[0].lower() or "空" in result[0]
+
+
+from llm.wiki_engine import _slugify
+
+
+def test_slugify_ascii():
+    assert _slugify("Hello World") == "hello-world"
+
+
+def test_slugify_cjk_kept():
+    assert _slugify("机器 学习") == "机器-学习"
+
+
+def test_slugify_strips_punctuation():
+    assert _slugify("AI/ML & DL!") == "ai-ml-dl"
+
+
+def test_slugify_collapses_dashes():
+    assert _slugify("  a   b  ") == "a-b"
+
+
+def test_slugify_empty_falls_back():
+    assert _slugify("!!!") == "untitled"
