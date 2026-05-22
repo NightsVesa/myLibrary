@@ -271,16 +271,14 @@ class _GraphWindow:
     def _on_hover(self, e) -> None:
         on_right  = e.x >= self.w - GRIP
         on_bottom = e.y >= self.h - GRIP
-        # Title bar cursor
         if e.y < CHROME_H and not on_right:
             self._canvas.config(cursor="fleur")
         elif on_right and on_bottom:
-            self._canvas.config(cursor="sizing_se")
+            self._canvas.config(cursor="bottom_right_corner")
         elif on_right:
-            self._canvas.config(cursor="sizing_e")
+            self._canvas.config(cursor="sb_h_double_arrow")
         elif on_bottom:
-            self._canvas.config(cursor="sizing_s")
-        # Hover on a node → hand cursor
+            self._canvas.config(cursor="sb_v_double_arrow")
         elif self._hit_node(e.x, e.y) is not None:
             self._canvas.config(cursor="hand2")
         else:
