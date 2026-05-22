@@ -116,15 +116,25 @@ When drawing emoji + CJK text together in a single Canvas line, **always** split
 ### LLM wiki layer
 
 Three-layer architecture from `docs/llm-wiki.md`:
-- **Raw sources** (`notes/`) — immutable user notes, same as before.
-- **Wiki** (`wiki/`) — LLM-generated summary pages, `index.md` (catalog), `log.md` (chronological). The LLM owns this directory; users read it.
-- **Schema** — prompt templates in `llm/prompts.py` govern the LLM's behavior.
+- **Raw sources** (`notes/`) — immutable user notes.
+- **Wiki** (`wiki/`) — LLM-maintained pages. Flat directory using filename prefixes:
+  - `summary_<note-stem>.md` — per-source summary
+  - `entity_<slug>.md` — page about a person/tool/place/product
+  - `concept_<slug>.md` — page about an abstract idea or method
+  - `index.md` — categorized catalog with `## Sources`, `## Entities`, `## Concepts` sections
+  - `log.md` — chronological operation log
+- **Schema** — prompt templates in `llm/prompts.py` (`INGEST_EXTRACT_SYSTEM`, `MERGE_PAGE_SYSTEM`, `QUERY_SYSTEM`).
 
-`llm/client.py` is a thin wrapper around `httpx` targeting any OpenAI-compatible chat completions endpoint. Configuration: `LLM_API_BASE`, `LLM_API_KEY`, `LLM_MODEL` (env vars, defaults in `config.py`). Works with OpenAI, DeepSeek, Ollama, Groq, LM Studio.
+`llm/client.py` is a thin `httpx` wrapper around any OpenAI-compatible chat completions endpoint. Configuration: `LLM_API_BASE`, `LLM_API_KEY`, `LLM_MODEL` (env vars, defaults in `config.py`). Works with OpenAI, DeepSeek, Ollama, Groq, LM Studio.
 
-**Ingest**: `llm/wiki_engine.ingest_note(path)` reads a note, calls the LLM to generate a summary, writes `wiki/summary_<stem>.md`, updates `wiki/index.md` and `wiki/log.md`. Triggered automatically on save (input, upload, drag-and-drop) via `background_ingest()` in a daemon thread. Silently skipped if `LLM_API_KEY` is empty.
+**Ingest** (`llm/wiki_engine.ingest_note`) runs in two stages:
 
-**Query**: `llm/wiki_engine.query_wiki(question)` picks relevant wiki pages by keyword overlap, sends them + the question to the LLM, and streams the response. Used by `ui/chat_tab.ChatTab` (the 4th sidebar panel, Ctrl+4, orange theme).
+1. **Extract** — one LLM call receives the source note plus the current `index.md` catalog and returns a JSON document with `summary`, `entities`, `concepts`, and `update_targets`. The orchestrator writes the `summary_<stem>.md` source page from this. If the JSON fails to parse, `_parse_extract` returns an empty `ExtractResult` and the source page is still written.
+2. **Merge per page** — for every entity and concept in the extract result, one LLM call receives the page's existing markdown (if any) plus the new contribution from this source and returns the full updated page body. The orchestrator writes each page individually; a single page's failure is caught and isolated so the rest still proceed.
+
+After all merges, `index.md` is rewritten from scratch by `_write_index` (no incremental edits — the on-disk state plus this run's new entries are the source of truth), and a log entry is appended. A typical source touches 5–15 pages and makes that many LLM calls. Ingest runs on a fire-and-forget daemon thread (`background_ingest`); silently skipped if `LLM_API_KEY` is empty.
+
+**Query** (`llm/wiki_engine.query_wiki`) globs `summary_*.md`, `entity_*.md`, and `concept_*.md`, picks the top-N by keyword overlap with the question (`_tokenize` handles ASCII words + CJK bigrams), and streams the LLM's answer through `chat_stream`. Used by `ui/chat_tab.ChatTab` (the 4th sidebar panel, Ctrl+4, orange theme).
 
 **Threading**: LLM calls never block the tkinter main loop. `ChatTab` uses `queue.Queue` + `root.after(50, poll)` to stream chunks into the text widget. `background_ingest` uses a fire-and-forget daemon thread.
 
