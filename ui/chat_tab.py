@@ -1,6 +1,8 @@
 import queue
+import tempfile
 import threading
 import tkinter as tk
+from pathlib import Path
 
 from llm.client import LLMConfig
 from llm.wiki_engine import query_wiki
@@ -26,9 +28,16 @@ class ChatTab:
         self.frame.grid_columnconfigure(0, weight=1)
         self.frame.grid_rowconfigure(1, weight=1)
 
-        cartoon_label(self.frame, "向知识库提问", kind="hint").grid(
-            row=0, column=0, sticky="w", padx=2, pady=(4, 2),
+        header = tk.Frame(self.frame, bg=self._bg)
+        header.grid(row=0, column=0, sticky="ew", padx=2, pady=(4, 2))
+        header.grid_columnconfigure(0, weight=1)
+        cartoon_label(header, "向知识库提问", kind="hint").grid(
+            row=0, column=0, sticky="w",
         )
+        CartoonButton(
+            header, "📖", command=self._open_reader,
+            kind="orange", width=44, height=30,
+        ).grid(row=0, column=1, sticky="e")
 
         # Chat history
         hist_border = tk.Frame(self.frame, bg=self._edge)
@@ -140,3 +149,35 @@ class ChatTab:
         except queue.Empty:
             pass
         self.frame.after(50, self._poll_queue)
+
+    def _open_reader(self) -> None:
+        text = self.history.get("1.0", tk.END).strip()
+        if not text:
+            return
+        md = self._conversation_to_markdown(text)
+        tmp = Path(app_config.WIKI_DIR) / "_chat_preview.md"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(md, encoding="utf-8")
+
+        from ui.search_tab import _ReaderWindow
+        root = self.frame.nametowidget(".")
+        prev = getattr(root, "_active_reader", None)
+        if prev is not None and prev.winfo_exists():
+            prev.destroy()
+        reader = _ReaderWindow(
+            root, tmp, query="",
+            bg_color=self._bg, edge_color=self._edge,
+        )
+        root._active_reader = reader.win
+
+    @staticmethod
+    def _conversation_to_markdown(raw: str) -> str:
+        lines: list[str] = []
+        for line in raw.splitlines():
+            if line.startswith("You: "):
+                lines.append(f"### You\n\n{line[5:]}\n")
+            elif line.startswith("Assistant: "):
+                lines.append(f"### Assistant\n\n{line[11:]}\n")
+            else:
+                lines.append(line)
+        return "\n".join(lines)

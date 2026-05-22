@@ -10,7 +10,7 @@ from ttkbootstrap.dialogs import Messagebox
 from PIL import Image, ImageDraw, ImageTk
 from tkinterdnd2 import DND_FILES
 
-from config import APP_TITLE, BASE_DIR
+from config import APP_TITLE, ASSETS_DIR
 from storage.note_store import save_note
 from llm.wiki_engine import background_ingest
 from ui.cartoon_widgets import (
@@ -22,7 +22,7 @@ from ui.upload_tab import UploadTab, SUPPORTED as UPLOAD_HANDLERS
 from ui.search_tab import SearchTab
 from ui.chat_tab import ChatTab
 
-PET_DIR = BASE_DIR / "assets"
+PET_DIR = ASSETS_DIR
 PET_STATES = ("idle", "attack", "happy", "sleep")
 TRANSPARENT = "#ff00ff"
 
@@ -626,6 +626,8 @@ class MainWindow:
         self._active_idx = idx
         self._panel_pinned = pinned
         label, emoji, tab_cls, hint, accent, _shadow, pale_bg, edge_color = ACTIONS[idx]
+        if tab_cls is ChatTab:
+            pinned = True
 
         panel = tk.Toplevel(self.root)
         panel.overrideredirect(True)
