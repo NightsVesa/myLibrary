@@ -17,8 +17,7 @@ markdown fences. The object must have these keys:
   "concepts": [
     {"name": "<display name>", "slug": "<kebab-case-slug>",
      "contribution": "<1-3 sentences explaining what THIS source adds about this concept>"}
-  ],
-  "update_targets": ["entity_<slug>.md", "concept_<slug>.md", ...]
+  ]
 }
 
 Rules:
@@ -30,8 +29,6 @@ the user message — if so, you MUST reuse the exact slug from that list when yo
 entity/concept matches an existing one (even if your slug differs only in \
 punctuation or case). Only invent a new slug when the entity/concept is genuinely \
 new.
-- `update_targets` MUST list every page (existing or new) whose `<slug>` appears \
-in entities/concepts above. The orchestrator uses this to drive per-page merge calls.
 - Write summary and contributions in the same language as the source.
 - Be factual. Do not invent information.
 - Keep entities + concepts to AT MOST 15 combined.

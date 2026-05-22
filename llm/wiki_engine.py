@@ -52,7 +52,6 @@ class ExtractResult:
     summary: str
     entities: list[dict]
     concepts: list[dict]
-    update_targets: list[str]
 
 
 @dataclass(frozen=True)
@@ -75,12 +74,11 @@ def _parse_extract(raw: str) -> ExtractResult:
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
-        return ExtractResult("", [], [], [])
+        return ExtractResult("", [], [])
     return ExtractResult(
         summary=str(data.get("summary", "")),
         entities=list(data.get("entities", [])),
         concepts=list(data.get("concepts", [])),
-        update_targets=list(data.get("update_targets", [])),
     )
 
 

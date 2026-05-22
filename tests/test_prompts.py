@@ -11,7 +11,7 @@ def test_extract_prompt_mentions_json():
 
 
 def test_extract_prompt_lists_required_keys():
-    for key in ("summary", "entities", "concepts", "update_targets"):
+    for key in ("summary", "entities", "concepts"):
         assert key in INGEST_EXTRACT_SYSTEM
 
 

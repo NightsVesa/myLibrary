@@ -93,29 +93,26 @@ def test_canonical_slug_cjk_no_false_positive():
 # --- _parse_extract --------------------------------------------------------
 
 def test_parse_extract_minimal():
-    raw = '{"summary": "s", "entities": [], "concepts": [], "update_targets": []}'
+    raw = '{"summary": "s", "entities": [], "concepts": []}'
     out = _parse_extract(raw)
     assert isinstance(out, ExtractResult)
     assert out.summary == "s"
     assert out.entities == []
-    assert out.update_targets == []
 
 
 def test_parse_extract_full():
     raw = (
         '{"summary": "AI is broad.",'
         ' "entities": [{"name":"OpenAI","slug":"openai","contribution":"funded by ms"}],'
-        ' "concepts": [{"name":"ML","slug":"ml","contribution":"core idea"}],'
-        ' "update_targets": ["entities/openai.md","concepts/ml.md"]}'
+        ' "concepts": [{"name":"ML","slug":"ml","contribution":"core idea"}]}'
     )
     out = _parse_extract(raw)
     assert out.entities[0]["slug"] == "openai"
     assert out.concepts[0]["slug"] == "ml"
-    assert "entities/openai.md" in out.update_targets
 
 
 def test_parse_extract_strips_code_fences():
-    raw = '```json\n{"summary":"s","entities":[],"concepts":[],"update_targets":[]}\n```'
+    raw = '```json\n{"summary":"s","entities":[],"concepts":[]}\n```'
     out = _parse_extract(raw)
     assert out.summary == "s"
 
@@ -274,8 +271,7 @@ def test_ingest_note_writes_summary_entities_concepts(wiki_dir, notes_dir, confi
     extract_json = (
         '{"summary": "Note about OpenAI and ML.",'
         ' "entities": [{"name":"OpenAI","slug":"openai","contribution":"Builds GPT."}],'
-        ' "concepts": [{"name":"ML","slug":"ml","contribution":"Field of study."}],'
-        ' "update_targets": ["entities/openai.md","concepts/ml.md"]}'
+        ' "concepts": [{"name":"ML","slug":"ml","contribution":"Field of study."}]}'
     )
 
     calls = []
@@ -316,8 +312,7 @@ def test_ingest_note_summary_lists_related_pages(wiki_dir, notes_dir, config):
     extract_json = (
         '{"summary": "A summary.",'
         ' "entities": [{"name":"OpenAI","slug":"openai","contribution":"c"}],'
-        ' "concepts": [{"name":"ML","slug":"ml","contribution":"c"}],'
-        ' "update_targets": ["entities/openai.md","concepts/ml.md"]}'
+        ' "concepts": [{"name":"ML","slug":"ml","contribution":"c"}]}'
     )
 
     def fake_chat(_cfg, messages):
@@ -339,7 +334,7 @@ def test_ingest_note_no_related_section_when_empty(wiki_dir, notes_dir, config):
     note.write_text("content", encoding="utf-8")
     extract_json = (
         '{"summary": "Only a summary.",'
-        ' "entities": [], "concepts": [], "update_targets": []}'
+        ' "entities": [], "concepts": []}'
     )
     with patch("llm.wiki_engine.chat", return_value=extract_json):
         result = ingest_note(note, config, wiki_dir=wiki_dir)
@@ -355,7 +350,7 @@ def test_ingest_note_canonicalizes_slug(wiki_dir, notes_dir, config):
     extract_json = (
         '{"summary": "S.",'
         ' "entities": [{"name":"OpenAI","slug":"open-ai","contribution":"c"}],'
-        ' "concepts": [], "update_targets": ["entities/open-ai.md"]}'
+        ' "concepts": []}'
     )
 
     def fake_chat(_cfg, messages):
@@ -381,7 +376,7 @@ def test_ingest_note_merge_failure_is_isolated(wiki_dir, notes_dir, config):
         '{"summary": "S.",'
         ' "entities": [{"name":"E1","slug":"e1","contribution":"c1"},'
         '              {"name":"E2","slug":"e2","contribution":"c2"}],'
-        ' "concepts": [], "update_targets": ["entities/e1.md","entities/e2.md"]}'
+        ' "concepts": []}'
     )
 
     call_n = [0]
