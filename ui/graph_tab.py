@@ -287,7 +287,10 @@ class _GraphWindow:
     def _on_hover(self, e) -> None:
         on_right  = e.x >= self.w - GRIP
         on_bottom = e.y >= self.h - GRIP
-        if e.y < CHROME_H and not on_right:
+        # Chrome buttons override title-bar drag cursor
+        if e.y < CHROME_H and self._btn_at(e.x, e.y) is not None:
+            self._canvas.config(cursor="hand2")
+        elif e.y < CHROME_H and not on_right:
             self._canvas.config(cursor="fleur")
         elif on_right and on_bottom:
             self._canvas.config(cursor="bottom_right_corner")
@@ -462,7 +465,7 @@ class _GraphWindow:
                 [bx1, by1, bx2, by1, bx2, by2, bx1, by2],
                 fill=bg_c, outline=ol_c, width=1,
             )
-            fs = ("Segoe UI Emoji", 11) if text in ("🔄", "🗖", "🗕") else ("Microsoft YaHei", 8, "bold")
+            fs = ("Segoe UI Emoji", 13) if text in ("🔄", "🗖", "🗕") else ("Microsoft YaHei", 9, "bold")
             c.create_text((bx1 + bx2) // 2, (by1 + by2) // 2,
                           text=text, fill=TEXT_LIGHT, font=fs)
 
@@ -483,18 +486,18 @@ class _GraphWindow:
 
     def _chrome_buttons(self) -> list[tuple[int, int, int, int, str, str, str]]:
         """Return [(x1,y1,x2,y2, text, bg, outline), ...] right-to-left."""
-        BTN_W = 22
+        BTN_W = 28
         btns = []
         # close, maximize, minimize, refresh — right-to-left
         labels = [("✕", "#fdf2f2", "#f0c0c0"),   # close
                   ("🗖", "#f0ecff", "#c0a8e0"),   # maximize
                   ("🗕", "#f0ecff", "#c0a8e0"),   # minimize
                   ("🔄", "#e8dcf8", "#c0a8e0")]   # refresh
-        x2 = self.w - 6
+        x2 = self.w - 8
         for text, bg_c, ol_c in labels:
             x1 = x2 - BTN_W
             btns.append((x1, 4, x2, CHROME_H - 4, text, bg_c, ol_c))
-            x2 = x1 - 4
+            x2 = x1 - 6
         return btns
 
     def _btn_at(self, x: int, y: int) -> int | None:
