@@ -877,15 +877,19 @@ class MainWindow:
             fill=body_r, outline=edge_c, width=3,
         )
 
-        emoji = "🎉" if ok > 0 else "😞"
+        emoji_face = ("Segoe UI Emoji", 14)
+        heading_face = ("Microsoft YaHei", 11, "bold")
+        body_face = ("Microsoft YaHei", 10)
+
         status = f"完成: {ok} 成功" + (f", {err} 失败" if err else "")
         c.create_text(
-            bw // 2, 22, text=f"{emoji} Wiki 更新", fill=TEXT_MAIN,
-            font=FONT_HEADING,
+            bw // 2, 18, text=emoji, fill=TEXT_MAIN, font=emoji_face,
         )
         c.create_text(
-            bw // 2, 52, text=status,
-            fill=TEXT_MAIN, font=FONT_BODY,
+            bw // 2, 38, text="Wiki 更新", fill=TEXT_MAIN, font=heading_face,
+        )
+        c.create_text(
+            bw // 2, 62, text=status, fill=TEXT_MAIN, font=body_face,
         )
 
         def _dismiss():
