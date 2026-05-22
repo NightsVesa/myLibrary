@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Generator
 
+import logging as _logging
 import re as _re
 import threading
 
@@ -322,6 +323,7 @@ def ingest_note(
                     config=config,
                 )
             except Exception:
+                _logging.exception("merge failed for %s", filename)
                 continue
             registry[:] = [e for e in registry if e.filename != filename]
             registry.append(IndexEntry(
@@ -471,7 +473,7 @@ def background_ingest(note_path: Path) -> None:
         try:
             ingest_note(note_path, config)
         except Exception:
-            pass
+            _logging.exception("background ingest failed for %s", note_path)
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
