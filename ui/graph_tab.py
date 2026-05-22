@@ -18,16 +18,22 @@ TEXT_LIGHT = "#6b7c8f"
 CHROME_H = 32        # title-bar height
 GRIP = 28  # resize-edge sensitivity (px)
 
-NODE_R = {"source": 12, "entity": 10, "concept": 9}
-NODE_FILL = {
-    "source":  "#a8d4f4",
-    "entity":  "#a8eedd",
-    "concept": "#ffe4a8",
+NODE_R_BASE = {"source": 7, "entity": 6, "concept": 5}
+NODE_R_MAX  = {"source": 20, "entity": 16, "concept": 13}
+NODE_FILL_LOW = {
+    "source":  "#d8effa",
+    "entity":  "#d0f5e9",
+    "concept": "#fff2d0",
 }
-NODE_EDGE = {
-    "source":  "#5fa8d4",
-    "entity":  "#3db88a",
-    "concept": "#dba42a",
+NODE_FILL_HIGH = {
+    "source":  "#4a9ed4",
+    "entity":  "#1d9e6e",
+    "concept": "#d49820",
+}
+NODE_EDGE_HIGH = {
+    "source":  "#3a80b0",
+    "entity":  "#157a54",
+    "concept": "#b07818",
 }
 LINK_COLOR = "#d0d8e8"
 FONT_NODE = ("Microsoft YaHei", 7)
@@ -150,6 +156,8 @@ class _GraphWindow:
 
         self._graph: Graph | None = None
         self._layout_nodes: list[dict] = []
+        self._degrees: dict[str, int] = {}  # node id → connection count
+        self._max_degree: int = 1
         self._pan = {"x": 0.0, "y": 0.0}
         self._pan_start = (0.0, 0.0)
         self._drag_nid: str | None = None
@@ -157,6 +165,8 @@ class _GraphWindow:
         self._resize_edge = ""          # "right", "bottom", or "rightbottom"
         self._drag_origin = (0, 0)
         self._scale = 1.0
+        self._maximized = False
+        self._restore_geo = ""
 
         self._build_window()
         self._build_canvas()
@@ -197,12 +207,18 @@ class _GraphWindow:
         self.win.bind("<Configure>", self._on_resize)
 
     def _on_press(self, e) -> None:
-        # Close-button hit test
-        if self._hit_close(e.x, e.y):
+        # Chrome button bar hit test
+        btn = self._btn_at(e.x, e.y)
+        if btn == 0:  # close
             self._close()
             return
-        # Refresh-button hit test
-        if self._hit_refresh(e.x, e.y):
+        if btn == 1:  # maximize
+            self._toggle_maximize()
+            return
+        if btn == 2:  # minimize
+            self._iconify()
+            return
+        if btn == 3:  # refresh
             self._reload()
             return
         # Resize: any edge within GRIP px
@@ -289,7 +305,8 @@ class _GraphWindow:
         for nd in reversed(self._layout_nodes):
             nx = nd["x"] * self._scale + ox
             ny = nd["y"] * self._scale + oy + CHROME_H
-            r = NODE_R.get(self._node_kind(nd["id"]), 10) + 4
+            base_r = NODE_R_BASE.get(self._node_kind(nd["id"]), 8)
+            r = self._deg_r(nd["id"], base_r) + 4
             if abs(mx - nx) < r and abs(my - ny) < r:
                 return nd["id"]
         return None
@@ -312,11 +329,47 @@ class _GraphWindow:
     def _reload(self) -> None:
         import config
         self._graph = parse_wiki_graph(config.WIKI_DIR)
+        self._degrees = self._compute_degrees(self._graph)
+        self._max_degree = max(self._degrees.values()) if self._degrees else 1
         content_w, content_h = self.w, self.h - CHROME_H
         self._layout_nodes = _layout(self._graph, content_w, content_h)
         self._scale = 1.0
         self._pan = {"x": 0.0, "y": CHROME_H / 2.0}
         self._draw()
+
+    @staticmethod
+    def _compute_degrees(g: Graph) -> dict[str, int]:
+        deg: dict[str, int] = {}
+        for e in g.edges:
+            deg[e.source] = deg.get(e.source, 0) + 1
+            deg[e.target] = deg.get(e.target, 0) + 1
+        # ensure every node has at least 0
+        for n in g.nodes:
+            deg.setdefault(n.id, 0)
+        return deg
+
+    def _deg_r(self, nid: str, base: float) -> float:
+        d = self._degrees.get(nid, 0)
+        if self._max_degree <= 0:
+            return base
+        frac = d / self._max_degree
+        return base + frac * (NODE_R_MAX.get(self._node_kind(nid), 14) - base)
+
+    def _deg_color(self, nid: str) -> str:
+        d = self._degrees.get(nid, 0)
+        frac = (d / self._max_degree) if self._max_degree > 0 else 0.0
+        lo = NODE_FILL_LOW.get(self._node_kind(nid), "#e0e0e0")
+        hi = NODE_FILL_HIGH.get(self._node_kind(nid), "#888888")
+        return self._lerp_color(lo, hi, frac)
+
+    @staticmethod
+    def _lerp_color(c_lo: str, c_hi: str, t: float) -> str:
+        r1, g1, b1 = int(c_lo[1:3], 16), int(c_lo[3:5], 16), int(c_lo[5:7], 16)
+        r2, g2, b2 = int(c_hi[1:3], 16), int(c_hi[3:5], 16), int(c_hi[5:7], 16)
+        r = int(r1 + (r2 - r1) * t)
+        g = int(g1 + (g2 - g1) * t)
+        b = int(b1 + (b2 - b1) * t)
+        return f"#{r:02x}{g:02x}{b:02x}"
 
     def _node_kind(self, nid: str) -> str:
         if not self._graph:
@@ -359,14 +412,16 @@ class _GraphWindow:
             x = nd["x"] * self._scale + ox
             y = nd["y"] * self._scale + oy + CHROME_H
             kind = self._node_kind(nd["id"])
-            r = NODE_R.get(kind, 10) * self._scale
-            r = max(4, min(20, r))
-            fill = NODE_FILL.get(kind, "#ccc")
-            outline = NODE_EDGE.get(kind, "#999")
+            base_r = NODE_R_BASE.get(kind, 8)
+            r = self._deg_r(nd["id"], base_r) * self._scale
+            r = max(3, min(24, r))
+            fill = self._deg_color(nd["id"])
+            outline = NODE_EDGE_HIGH.get(kind, "#777")
+            width = 2 if self._degrees.get(nd["id"], 0) >= self._max_degree * 0.5 else 1.5
 
             c.create_oval(
                 x - r, y - r, x + r, y + r,
-                fill=fill, outline=outline, width=2,
+                fill=fill, outline=outline, width=width,
             )
 
             title = self._node_title(nd["id"])
@@ -400,27 +455,16 @@ class _GraphWindow:
             anchor="w", fill=TEXT_LIGHT, font=("Microsoft YaHei", 8),
         )
 
-        # Refresh button
-        rfx1, rfy1, rfx2, rfy2 = self._refresh_rect()
-        c.create_polygon(
-            [rfx1, rfy1, rfx2, rfy1, rfx2, rfy2, rfx1, rfy2],
-            fill="#e8dcf8", outline="#c0a8e0", width=1,
-        )
-        c.create_text(
-            (rfx1 + rfx2) // 2, (rfy1 + rfy2) // 2,
-            text="🔄", font=("Segoe UI Emoji", 11),
-        )
-
-        # Close button
-        cx1, cy1, cx2, cy2 = self._close_rect()
-        c.create_polygon(
-            [cx1, cy1, cx2, cy1, cx2, cy2, cx1, cy2],
-            fill="#fdf2f2", outline="#f0c0c0", width=1,
-        )
-        c.create_text(
-            (cx1 + cx2) // 2, (cy1 + cy2) // 2,
-            text="✕", fill=TEXT_LIGHT, font=("Microsoft YaHei", 8, "bold"),
-        )
+        # ── Chrome buttons (right-aligned, right-to-left) ─────────────────
+        close_btns = self._chrome_buttons()
+        for bx1, by1, bx2, by2, text, bg_c, ol_c in close_btns:
+            c.create_polygon(
+                [bx1, by1, bx2, by1, bx2, by2, bx1, by2],
+                fill=bg_c, outline=ol_c, width=1,
+            )
+            fs = ("Segoe UI Emoji", 11) if text in ("🔄", "🗖", "🗕") else ("Microsoft YaHei", 8, "bold")
+            c.create_text((bx1 + bx2) // 2, (by1 + by2) // 2,
+                          text=text, fill=TEXT_LIGHT, font=fs)
 
         # Resize grip — lines in bottom-right corner
         grip_x, grip_y = self.w - GRIP, self.h - GRIP
@@ -428,28 +472,93 @@ class _GraphWindow:
             lx = grip_x + i * 8
             c.create_line(lx, self.h, self.w, grip_y + i * 8,
                           fill="#c8c0d8", width=1.5)
-        # Also draw a subtle edge highlight on the right+bottom border
+        # Window border
         c.create_rectangle(
             0, 0, self.w - 1, self.h - 1,
             outline="#d4b8f0", width=1,
         )
 
+        # ── Top-10 ranking overlay (right side) ──────────────────────────
+        self._draw_ranking()
+
+    def _chrome_buttons(self) -> list[tuple[int, int, int, int, str, str, str]]:
+        """Return [(x1,y1,x2,y2, text, bg, outline), ...] right-to-left."""
+        BTN_W = 22
+        btns = []
+        # close, maximize, minimize, refresh — right-to-left
+        labels = [("✕", "#fdf2f2", "#f0c0c0"),   # close
+                  ("🗖", "#f0ecff", "#c0a8e0"),   # maximize
+                  ("🗕", "#f0ecff", "#c0a8e0"),   # minimize
+                  ("🔄", "#e8dcf8", "#c0a8e0")]   # refresh
+        x2 = self.w - 6
+        for text, bg_c, ol_c in labels:
+            x1 = x2 - BTN_W
+            btns.append((x1, 4, x2, CHROME_H - 4, text, bg_c, ol_c))
+            x2 = x1 - 4
+        return btns
+
+    def _btn_at(self, x: int, y: int) -> int | None:
+        """Return button index (0=close, 1=max, 2=min, 3=refresh) or None."""
+        if not (0 <= y <= CHROME_H):
+            return None
+        for i, (bx1, by1, bx2, by2, *_unused) in enumerate(self._chrome_buttons()):
+            if bx1 <= x <= bx2:
+                return i
+        return None
+
+    def _top_ranked(self, n: int = 10) -> list[tuple[str, str, int, str]]:
+        """Return [(nid, title, degree, kind), ...] sorted by degree DESC."""
+        if not self._graph:
+            return []
+        items = []
+        for nd in self._graph.nodes:
+            deg = self._degrees.get(nd.id, 0)
+            if deg > 0:
+                items.append((nd.id, nd.title, deg, nd.kind))
+        items.sort(key=lambda t: t[2], reverse=True)
+        return items[:n]
+
+    def _draw_ranking(self) -> None:
+        c = self._canvas
+        items = self._top_ranked(10)
+        if not items:
+            return
+        panel_w = 170
+        panel_x = self.w - panel_w - 12
+        panel_y = CHROME_H + 8
+        row_h = 19
+        panel_h = len(items) * row_h + 30
+
+        # Semi-transparent panel background (white with alpha-like opacity)
+        c.create_rectangle(
+            panel_x - 6, panel_y - 4,
+            panel_x + panel_w, panel_y + panel_h,
+            fill="#fefeff", outline="#e8e0f0", width=1,
+        )
+        c.create_text(
+            panel_x + panel_w // 2, panel_y + 4,
+            text="Top 10 连接度", fill=TEXT_MAIN,
+            font=("Microsoft YaHei", 8, "bold"),
+        )
+
+        for rank, (nid, title, deg, kind) in enumerate(items):
+            ry = panel_y + row_h + rank * row_h
+            r = 4
+            fill = NODE_FILL_HIGH.get(kind, "#ccc")
+            c.create_oval(panel_x, ry - r, panel_x + r * 2, ry + r,
+                          fill=fill, outline="", width=0)
+            # Truncate title if too long
+            short = title if len(title) <= 14 else title[:13] + "…"
+            c.create_text(
+                panel_x + 12, ry, text=f"{short}",
+                anchor="w", fill=TEXT_MAIN, font=("Microsoft YaHei", 7),
+            )
+            c.create_text(
+                panel_x + panel_w - 6, ry, text=str(deg),
+                anchor="e", fill=TEXT_LIGHT, font=("Microsoft YaHei", 7, "bold"),
+            )
+
     # ── hit-test helpers ─────────────────────────────────────────────────
-
-    def _refresh_rect(self) -> tuple[int, int, int, int]:
-        """(x1, y1, x2, y2) for the refresh button."""
-        return (self.w - 68, 4, self.w - 30, CHROME_H - 4)
-
-    def _close_rect(self) -> tuple[int, int, int, int]:
-        return (self.w - 26, 4, self.w - 6, CHROME_H - 4)
-
-    def _hit_close(self, x: int, y: int) -> bool:
-        cx1, cy1, cx2, cy2 = self._close_rect()
-        return cx1 <= x <= cx2 and cy1 <= y <= cy2
-
-    def _hit_refresh(self, x: int, y: int) -> bool:
-        rfx1, rfy1, rfx2, rfy2 = self._refresh_rect()
-        return rfx1 <= x <= rfx2 and rfy1 <= y <= rfy2
 
     # ── actions ──────────────────────────────────────────────────────────
 
@@ -460,6 +569,20 @@ class _GraphWindow:
             return
         if self._main:
             self._main._open_reader(path)
+
+    def _toggle_maximize(self) -> None:
+        if not self._maximized:
+            self._restore_geo = self.win.geometry()
+            sw = self.win.winfo_screenwidth()
+            sh = self.win.winfo_screenheight()
+            self.win.geometry(f"{sw}x{sh}+0+0")
+            self._maximized = True
+        else:
+            self.win.geometry(self._restore_geo)
+            self._maximized = False
+
+    def _iconify(self) -> None:
+        self.win.iconify()
 
     def _close(self) -> None:
         if self._main:
