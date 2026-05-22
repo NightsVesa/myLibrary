@@ -73,7 +73,10 @@ def chat_stream(
             if payload.strip() == "[DONE]":
                 break
             chunk = json.loads(payload)
-            delta = chunk["choices"][0].get("delta", {})
+            choices = chunk.get("choices", [])
+            if not choices:
+                continue
+            delta = choices[0].get("delta", {})
             text = delta.get("content", "")
             if text:
                 yield text

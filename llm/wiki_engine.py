@@ -130,6 +130,17 @@ def ingest_note(
     return page_path
 
 
+def _tokenize(text: str) -> set[str]:
+    import re
+    tokens: set[str] = set()
+    for word in re.findall(r'[a-zA-Z0-9]{2,}', text.lower()):
+        tokens.add(word)
+    cjk = [ch for ch in text if '一' <= ch <= '鿿']
+    for i in range(len(cjk) - 1):
+        tokens.add(cjk[i] + cjk[i + 1])
+    return tokens
+
+
 def _pick_relevant_pages(
     question: str,
     *,
@@ -141,12 +152,14 @@ def _pick_relevant_pages(
     if not index_path.exists():
         return []
 
-    q_words = set(question.lower().split())
+    q_tokens = _tokenize(question)
+    if not q_tokens:
+        return []
     scored: list[tuple[float, Path]] = []
 
     for md in wiki.glob("summary_*.md"):
         text = md.read_text(encoding="utf-8").lower()
-        hits = sum(1 for w in q_words if w in text)
+        hits = sum(1 for t in q_tokens if t in text)
         if hits > 0:
             scored.append((hits, md))
 
