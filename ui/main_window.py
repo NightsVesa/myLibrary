@@ -23,6 +23,7 @@ from ui.input_tab import InputTab
 from ui.upload_tab import UploadTab, SUPPORTED as UPLOAD_HANDLERS
 from ui.search_tab import SearchTab
 from ui.chat_tab import ChatTab
+from ui.graph_tab import GraphTab
 
 PET_DIR = ASSETS_DIR
 PET_STATES = ("idle", "attack", "happy", "sleep", "eat")
@@ -49,6 +50,7 @@ ACTIONS = [
     ("上传", "📁", UploadTab, "Ctrl+2", MINT,        "#3db88a", "#ebfaf3", "#a8eedd"),
     ("搜索", "🔍", SearchTab, "Ctrl+3", LAVENDER,    "#7a5acc", "#f3eefc", "#d8cefa"),
     ("问答", "💬", ChatTab,   "Ctrl+4", ORANGE,      "#dba42a", "#fff8e0", "#ffe4a8"),
+    ("图谱", "🕸️", GraphTab,  "Ctrl+5", "#9b59b6",   "#7d3c98", "#f5eeff", "#d4b8f0"),
 ]
 
 # Pet behaviour
@@ -434,6 +436,7 @@ class MainWindow:
         root.bind_all("<Control-Key-2>", lambda _e: self._shortcut_open(1))
         root.bind_all("<Control-Key-3>", lambda _e: self._shortcut_open(2))
         root.bind_all("<Control-Key-4>", lambda _e: self._shortcut_open(3))
+        root.bind_all("<Control-Key-5>", lambda _e: self._shortcut_open(4))
         root.bind_all("<Escape>", lambda _e: self._close_panel())
         root.focus_force()
 
@@ -782,6 +785,17 @@ class MainWindow:
         self._panel_bg = None
         self._active_idx = None
         self._panel_pinned = False
+
+    def _open_reader(self, path: Path) -> None:
+        """Open a wiki page in the reader window (reuse SearchTab's reader)."""
+        from ui.search_tab import _ReaderWindow
+        if hasattr(self.root, "_active_reader") and self.root._active_reader is not None:
+            reader = self.root._active_reader
+            reader._load_path(path)
+            reader.lift()
+        else:
+            reader = _ReaderWindow(self.root, path, query="", bg_color="#fafbff", edge_color="#d4b8f0")
+            self.root._active_reader = reader
 
     # ── drag-and-drop file ingestion ────────────────────────────────────────
 
