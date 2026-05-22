@@ -15,7 +15,7 @@ TRANSPARENT = "#ff00ff"
 TEXT_MAIN = "#2c3e50"
 TEXT_LIGHT = "#6b7c8f"
 
-CHROME_H = 32        # title-bar height
+CHROME_H = 38        # title-bar height
 GRIP = 28  # resize-edge sensitivity (px)
 
 NODE_R_BASE = {"source": 7, "entity": 6, "concept": 5}
@@ -229,8 +229,8 @@ class _GraphWindow:
             self._mode = "resize"
             self._drag_origin = (e.x_root, e.y_root)
             return
-        # Title bar drag
-        if e.y < CHROME_H:
+        # Title bar drag (left portion only, after buttons skipped above)
+        if e.y < CHROME_H and e.x < self._title_drag_zone():
             self._mode = "drag"
             self._drag_origin = (e.x_root - self.win.winfo_x(),
                                  e.y_root - self.win.winfo_y())
@@ -290,7 +290,7 @@ class _GraphWindow:
         # Chrome buttons override title-bar drag cursor
         if e.y < CHROME_H and self._btn_at(e.x, e.y) is not None:
             self._canvas.config(cursor="hand2")
-        elif e.y < CHROME_H and not on_right:
+        elif e.y < CHROME_H and e.x < self._title_drag_zone():
             self._canvas.config(cursor="fleur")
         elif on_right and on_bottom:
             self._canvas.config(cursor="bottom_right_corner")
@@ -325,6 +325,21 @@ class _GraphWindow:
         self.w, self.h = e.width, e.height
         self._canvas.place(width=self.w, height=self.h)
         self._canvas.config(width=self.w, height=self.h)
+        # Re-draw immediately for smooth resize visuals.
+        self._draw()
+        # Re-layout after the user stops resizing (debounce 400 ms).
+        if hasattr(self, '_relayout_after'):
+            self.win.after_cancel(self._relayout_after)
+        self._relayout_after = self.win.after(400, self._relayout)
+
+    def _relayout(self) -> None:
+        """Re-run force layout for current window size."""
+        if not self._graph:
+            return
+        content_w, content_h = self.w, self.h - CHROME_H
+        self._layout_nodes = _layout(self._graph, content_w, content_h)
+        self._scale = 1.0
+        self._pan = {"x": 0.0, "y": CHROME_H / 2.0}
         self._draw()
 
     # ── data ─────────────────────────────────────────────────────────────
@@ -508,6 +523,13 @@ class _GraphWindow:
             if bx1 <= x <= bx2:
                 return i
         return None
+
+    def _title_drag_zone(self) -> int:
+        """Return the x-coordinate where draggable title area ends (buttons begin)."""
+        btns = self._chrome_buttons()
+        if not btns:
+            return self.w
+        return min(b[0] for b in btns)  # left edge of the leftmost button
 
     def _top_ranked(self, n: int = 10) -> list[tuple[str, str, int, str]]:
         """Return [(nid, title, degree, kind), ...] sorted by degree DESC."""
