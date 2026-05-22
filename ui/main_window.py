@@ -458,6 +458,10 @@ class MainWindow:
         self.canvas.itemconfig(self._image_id, image=self._sprites[state])
         if state == "happy" and not auto_end:
             self._happy_persist = True
+        # Cancel pending sleep when switching to a non-idle/non-sleep state.
+        if state not in ("idle", "sleep") and self._sleep_after_id is not None:
+            self.root.after_cancel(self._sleep_after_id)
+            self._sleep_after_id = None
 
     def _tick(self) -> None:
         try:
@@ -848,9 +852,9 @@ class MainWindow:
     def _show_ingest_toast(self, ok: int, err: int) -> None:
         """Cartoon speech bubble near the pet, auto-dismiss after 4 s."""
         rx, ry = self.root.winfo_x(), self.root.winfo_y()
-        bw, bh = 260, 100
-        bx = rx + self.window_w // 2 - bw // 2
-        by = ry - bh - 12  # above the pet
+        bw, bh = 240, 110
+        bx = max(0, rx + self.window_w // 2 - bw // 2)
+        by = max(0, ry - bh - 14)
 
         toast = tk.Toplevel(self.root)
         toast.overrideredirect(True)
@@ -865,38 +869,40 @@ class MainWindow:
         )
         c.pack()
 
-        # Bubble body: rounded yellow rectangle
         body_r, edge_c = "#fff9e6", "#e6c85c"
+        # Bubble body (leave room for tail)
         c.create_polygon(
-            _round_rect_points(0, 0, bw, bh - 12, 18),
+            _round_rect_points(0, 0, bw, bh - 14, 18),
             smooth=True, fill=body_r, outline=edge_c, width=3,
         )
-        # Triangular tail pointing down toward the pet
+        # Triangle tail
         tail_cx = bw // 2
         c.create_polygon(
-            tail_cx - 12, bh - 12,  tail_cx + 12, bh - 12,  tail_cx, bh,
+            tail_cx - 10, bh - 14,
+            tail_cx + 10, bh - 14,
+            tail_cx, bh,
             fill=body_r, outline=edge_c, width=3,
         )
 
-        emoji_face = ("Segoe UI Emoji", 14)
-        heading_face = ("Microsoft YaHei", 11, "bold")
-        body_face = ("Microsoft YaHei", 10)
-
-        status = f"完成: {ok} 成功" + (f", {err} 失败" if err else "")
         c.create_text(
-            bw // 2, 18, text=emoji, fill=TEXT_MAIN, font=emoji_face,
+            bw // 2, 32, text="Wiki 更新",
+            fill="#2c3e50", font=("Microsoft YaHei", 12, "bold"),
         )
+        status = f"ok: {ok} 成功" + (f", {err} 失败" if err else "")
+        # Use a lighter secondary color for the status line
         c.create_text(
-            bw // 2, 38, text="Wiki 更新", fill=TEXT_MAIN, font=heading_face,
-        )
-        c.create_text(
-            bw // 2, 62, text=status, fill=TEXT_MAIN, font=body_face,
+            bw // 2, 62, text=status,
+            fill="#4a5568", font=("Microsoft YaHei", 9),
         )
 
         def _dismiss():
-            toast.destroy()
+            try:
+                toast.destroy()
+            except tk.TclError:
+                pass
         toast.bind("<Button-1>", lambda _e: _dismiss())
-        toast.after(4000, _dismiss)
+        # Schedule on root so the timer fires even if toast loses focus.
+        self.root.after(4000, _dismiss)
 
     # ══ end ingest feedback ════════════════════════════════════════════════
 
