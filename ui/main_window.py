@@ -849,7 +849,7 @@ class MainWindow:
                     err += 1
             # Ensure minimum animation duration.
             elapsed = int((time.monotonic() - t0) * 1000)
-            delay = max(0, MIN_EAT_MS - elapsed)
+            delay = max(0, self.MIN_EAT_MS - elapsed)
             self.root.after(delay, lambda: self._end_eat_animated(ok, err))
 
         thread = threading.Thread(target=_worker, daemon=True)
