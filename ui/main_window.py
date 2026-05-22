@@ -1,5 +1,7 @@
+import logging as _err_log
 import math
 import re
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -12,7 +14,7 @@ from tkinterdnd2 import DND_FILES
 
 from config import APP_TITLE, ASSETS_DIR
 from storage.note_store import save_raw_file
-from llm.wiki_engine import background_ingest
+
 from ui.cartoon_widgets import (
     FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT,
     hex_to_rgb as _hex_to_rgb_shared, make_card_png as _shared_card_png,
@@ -403,6 +405,7 @@ class MainWindow:
         self._state = "idle"
         self._state_t0 = time.monotonic()
         self._happy_after_id = None
+        self._happy_persist = False
         self._sleep_after_id = None
         self._tick_alive = True
 
@@ -447,12 +450,14 @@ class MainWindow:
 
     # ── state machine ───────────────────────────────────────────────────────
 
-    def _set_state(self, state: str) -> None:
+    def _set_state(self, state: str, *, auto_end: bool = True) -> None:
         if state == self._state:
             return
         self._state = state
         self._state_t0 = time.monotonic()
         self.canvas.itemconfig(self._image_id, image=self._sprites[state])
+        if state == "happy" and not auto_end:
+            self._happy_persist = True
 
     def _tick(self) -> None:
         try:
@@ -558,6 +563,8 @@ class MainWindow:
 
     def _end_happy(self) -> None:
         self._happy_after_id = None
+        if self._happy_persist:
+            return
         if self._state == "happy":
             self._set_state("idle")
 
@@ -729,7 +736,10 @@ class MainWindow:
             height=PANEL_H - content_top - PANEL_SHADOW - PANEL_BODY_PAD,
         )
 
-        tab = tab_cls(content, bg_color=pale_bg, edge_color=edge_color)
+        if tab_cls in (InputTab, UploadTab):
+            tab = tab_cls(content, bg_color=pale_bg, edge_color=edge_color, main=self)
+        else:
+            tab = tab_cls(content, bg_color=pale_bg, edge_color=edge_color)
         tab.frame.pack(fill=BOTH, expand=True)
 
         self._panel = panel
@@ -766,6 +776,7 @@ class MainWindow:
         if not paths:
             return
         ok, bad = [], []
+        saved_paths = []
         for raw in paths:
             p = Path(raw)
             if not p.exists():
@@ -776,31 +787,113 @@ class MainWindow:
                 continue
             try:
                 saved = save_raw_file(p)
-                background_ingest(saved)
-                ok.append(saved)
+                saved_paths.append(saved)
             except Exception as exc:
                 bad.append((p, str(exc)))
 
-        # Celebrate with the happy animation when at least one file worked
-        if ok:
-            self._set_state("happy")
-            if self._happy_after_id is not None:
-                self.root.after_cancel(self._happy_after_id)
-            self._happy_after_id = self.root.after(HAPPY_HOLD_MS, self._end_happy)
-
-        # Feedback
-        if ok and not bad:
-            names = "\n".join(f"  {n.name}" for n in ok)
-            Messagebox.show_info(f"已保存 {len(ok)} 个文件:\n{names}", parent=self.root)
-        elif bad and not ok:
+        # Batch feedback — rejects upfront, then animates the saves.
+        if bad and not saved_paths:
             details = "\n".join(f"  {p.name}: {msg}" for p, msg in bad)
             Messagebox.show_error(f"全部失败:\n{details}", parent=self.root)
-        elif ok and bad:
-            ok_names = "\n".join(f"  ✓ {n.name}" for n in ok)
-            bad_names = "\n".join(f"  ✗ {p.name}: {msg}" for p, msg in bad)
-            Messagebox.show_warning(
-                f"部分成功:\n{ok_names}\n\n{bad_names}", parent=self.root,
+        else:
+            if bad:
+                bad_names = "\n".join(f"  {p.name}: {msg}" for p, msg in bad)
+                Messagebox.show_warning(
+                    f"部分文件无法读取:\n{bad_names}", parent=self.root,
+                )
+            if saved_paths:
+                self._ingest_with_animation(saved_paths)
+
+    # ── ingest feedback ────────────────────────────────────────────────────
+
+    def _ingest_with_animation(self, paths: list[Path]) -> None:
+        """Start persistent happy animation, ingest every path in
+        background, then pop a cartoon toast with the result."""
+        self._set_state("happy", auto_end=False)
+
+        def _worker():
+            ok, err = 0, 0
+            last_title = ""
+            from llm.client import LLMConfig
+            from llm.wiki_engine import ingest_note as _ingest
+            import config as _cfg
+            llm_cfg = LLMConfig(
+                api_base=_cfg.LLM_API_BASE,
+                api_key=_cfg.LLM_API_KEY,
+                model=_cfg.LLM_MODEL,
             )
+            for p in paths:
+                try:
+                    _ingest(p, llm_cfg)
+                    last_title = p.stem.replace("_", " ")
+                    ok += 1
+                except Exception:
+                    _err_log.exception("ingest failed for %s", p)
+                    err += 1
+            self.root.after(0, lambda: self._end_happy_animated(ok, err, last_title))
+
+        self._happy_persist = True
+        if self._happy_after_id is not None:
+            self.root.after_cancel(self._happy_after_id)
+            self._happy_after_id = None
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+    def _end_happy_animated(self, ok: int, err: int, title: str) -> None:
+        self._happy_persist = False
+        self._end_happy()
+        self._show_ingest_toast(ok, err, title)
+
+    def _show_ingest_toast(self, ok: int, err: int, title: str) -> None:
+        """Cartoon speech bubble near the pet, auto-dismiss after 4 s."""
+        rx, ry = self.root.winfo_x(), self.root.winfo_y()
+        bw, bh = 260, 100
+        bx = rx + self.window_w // 2 - bw // 2
+        by = ry - bh - 12  # above the pet
+
+        toast = tk.Toplevel(self.root)
+        toast.overrideredirect(True)
+        toast.attributes("-topmost", True)
+        toast.config(bg=TRANSPARENT)
+        toast.wm_attributes("-transparentcolor", TRANSPARENT)
+        toast.geometry(f"{bw}x{bh}+{bx}+{by}")
+
+        c = tk.Canvas(
+            toast, width=bw, height=bh,
+            bg=TRANSPARENT, highlightthickness=0, borderwidth=0,
+        )
+        c.pack()
+
+        # Bubble body: rounded yellow rectangle
+        body_r, edge_c = "#fff9e6", "#e6c85c"
+        c.create_polygon(
+            _round_rect_points(0, 0, bw, bh - 12, 18),
+            smooth=True, fill=body_r, outline=edge_c, width=3,
+        )
+        # Triangular tail pointing down toward the pet
+        tail_cx = bw // 2
+        c.create_polygon(
+            tail_cx - 12, bh - 12,  tail_cx + 12, bh - 12,  tail_cx, bh,
+            fill=body_r, outline=edge_c, width=3,
+        )
+
+        emoji = "🎉" if ok > 0 else "😞"
+        status = f"完成: {ok} 成功" + (f", {err} 失败" if err else "")
+        c.create_text(
+            bw // 2, 22, text=f"{emoji} Wiki 更新", fill=TEXT_MAIN,
+            font=FONT_HEADING,
+        )
+        c.create_text(
+            bw // 2, 52, text=status,
+            fill=TEXT_MAIN, font=FONT_BODY,
+        )
+
+        def _dismiss():
+            toast.destroy()
+        toast.bind("<Button-1>", lambda _e: _dismiss())
+        toast.after(4000, _dismiss)
+
+    # ══ end ingest feedback ════════════════════════════════════════════════
 
 
 def _parse_dnd_files(data: str) -> list[str]:

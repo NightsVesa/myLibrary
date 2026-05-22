@@ -12,10 +12,11 @@ from ui.cartoon_widgets import (
 
 class InputTab:
     def __init__(self, parent, bg_color: str = WHITE,
-                 edge_color: str = SKY_LIGHT) -> None:
+                 edge_color: str = SKY_LIGHT, *, main=None) -> None:
         self.frame = tk.Frame(parent, bg=bg_color)
         self._bg = bg_color
         self._edge = edge_color
+        self._main = main
         self._build()
 
     def _build(self) -> None:
@@ -57,7 +58,10 @@ class InputTab:
         title = title_raw or None
         md = text_to_markdown(content, title=title)
         path = save_note(md, title=title)
-        background_ingest(path)
+        if self._main:
+            self._main._ingest_with_animation([path])
+        else:
+            background_ingest(path)
         Messagebox.show_info(f"已保存:\n{path.name}", parent=self.frame)
         self.text_border.text.delete("1.0", tk.END)
         title_entry.delete(0, tk.END)

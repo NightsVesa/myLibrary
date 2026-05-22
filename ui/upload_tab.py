@@ -29,10 +29,11 @@ SUPPORTED = {
 
 class UploadTab:
     def __init__(self, parent, bg_color: str = WHITE,
-                 edge_color: str = SKY_LIGHT) -> None:
+                 edge_color: str = SKY_LIGHT, *, main=None) -> None:
         self.frame = tk.Frame(parent, bg=bg_color)
         self._bg = bg_color
         self._edge = edge_color
+        self._main = main
         self._selected: Path | None = None
         self._build()
 
@@ -129,7 +130,10 @@ class UploadTab:
             return
         try:
             path = save_raw_file(self._selected)
-            background_ingest(path)
+            if self._main:
+                self._main._ingest_with_animation([path])
+            else:
+                background_ingest(path)
             Messagebox.show_info(f"已保存:\n{path.name}", parent=self.frame)
             self._selected = None
             self.file_label.config(text="未选择文件", fg=TEXT_LIGHT)
