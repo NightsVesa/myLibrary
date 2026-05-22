@@ -25,7 +25,11 @@ Rules:
 - Entities are concrete (people, tools, places, products). Concepts are abstract \
 (ideas, methods, theories).
 - Slugs: lowercase ASCII with dashes, OR CJK characters joined with dashes. \
-Match an existing page's slug if one already covers the same thing (look at the index).
+You may receive an explicit list of existing entity/concept slugs at the end of \
+the user message — if so, you MUST reuse the exact slug from that list when your \
+entity/concept matches an existing one (even if your slug differs only in \
+punctuation or case). Only invent a new slug when the entity/concept is genuinely \
+new.
 - `update_targets` MUST list every page (existing or new) whose `<slug>` appears \
 in entities/concepts above. The orchestrator uses this to drive per-page merge calls.
 - Write summary and contributions in the same language as the source.

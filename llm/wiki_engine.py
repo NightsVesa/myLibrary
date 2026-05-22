@@ -29,6 +29,24 @@ def _slugify(name: str) -> str:
     return slug or "untitled"
 
 
+def _canonical_slug(proposed: str, existing: set[str]) -> str:
+    """Return an existing slug if *proposed* differs only in punctuation/case."""
+    if not proposed or proposed in existing:
+        return proposed
+    norm = "".join(
+        ch.lower() for ch in proposed if ch.isalnum() or "一" <= ch <= "鿿"
+    )
+    if not norm:
+        return proposed
+    for es in existing:
+        es_norm = "".join(
+            ch.lower() for ch in es if ch.isalnum() or "一" <= ch <= "鿿"
+        )
+        if norm == es_norm:
+            return es
+    return proposed
+
+
 @dataclass(frozen=True)
 class ExtractResult:
     summary: str
@@ -160,14 +178,54 @@ def _append_log(wiki_dir: Path, operation: str, title: str, details: str) -> Non
 
 def _wiki_filename(note_name: str) -> str:
     stem = Path(note_name).stem
-    return f"summary_{stem}.md"
+    return f"sources/summary_{stem}.md"
+
+
+def _ensure_subdirs(wiki_dir: Path) -> None:
+    for name in ("sources", "entities", "concepts"):
+        (wiki_dir / name).mkdir(parents=True, exist_ok=True)
 
 
 def _index_catalog_for_prompt(wiki_dir: Path) -> str:
     idx = wiki_dir / "index.md"
     if not idx.exists():
         return "(wiki is empty)"
-    return idx.read_text(encoding="utf-8")
+    body = idx.read_text(encoding="utf-8")
+    # Strip the relative dir prefix from filenames in links for brevity,
+    # so the LLM sees  [Title](summary_x.md)  instead of  [Title](sources/summary_x.md).
+    out_lines: list[str] = []
+    for line in body.splitlines():
+        for prefix in ("sources/", "entities/", "concepts/"):
+            line = line.replace(f"]({prefix}", "](")
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+def _collect_existing_slugs(wiki_dir: Path) -> tuple[set[str], set[str]]:
+    entity_slugs: set[str] = set()
+    concept_slugs: set[str] = set()
+    for prefix, target in (("entities", entity_slugs), ("concepts", concept_slugs)):
+        d = wiki_dir / prefix
+        if d.exists():
+            for f in d.iterdir():
+                if f.suffix == ".md":
+                    target.add(f.stem)
+    return entity_slugs, concept_slugs
+
+
+def _slug_list_for_prompt(wiki_dir: Path) -> str:
+    entity_slugs, concept_slugs = _collect_existing_slugs(wiki_dir)
+    parts: list[str] = []
+    if entity_slugs:
+        parts.append(f"Existing entity slugs: [{', '.join(sorted(entity_slugs))}]")
+    if concept_slugs:
+        parts.append(f"Existing concept slugs: [{', '.join(sorted(concept_slugs))}]")
+    if parts:
+        parts.append(
+            "If your entity/concept matches one listed above, "
+            "you MUST reuse the exact same slug."
+        )
+    return "\n".join(parts)
 
 
 def ingest_note(
@@ -177,22 +235,25 @@ def ingest_note(
     wiki_dir: Path | None = None,
 ) -> Path:
     wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
-    wiki.mkdir(parents=True, exist_ok=True)
+    _ensure_subdirs(wiki)
 
     source_text = note_path.read_text(encoding="utf-8")
     title = note_path.stem.replace("_", " ")
     catalog = _index_catalog_for_prompt(wiki)
+    slug_list = _slug_list_for_prompt(wiki)
+
+    user_parts = [
+        f"Source note title: {title}",
+        "",
+        f"=== Source ===\n{source_text}",
+        f"=== Current wiki index ===\n{catalog}",
+    ]
+    if slug_list:
+        user_parts.append(slug_list)
 
     extract_messages = [
         Message(role="system", content=INGEST_EXTRACT_SYSTEM),
-        Message(
-            role="user",
-            content=(
-                f"Source note title: {title}\n\n"
-                f"=== Source ===\n{source_text}\n\n"
-                f"=== Current wiki index ===\n{catalog}\n"
-            ),
-        ),
+        Message(role="user", content="\n\n".join(user_parts)),
     ]
     extracted = _parse_extract(chat(config, extract_messages))
 
@@ -203,18 +264,25 @@ def ingest_note(
         f"created: {datetime.now().strftime('%Y-%m-%d')}\n---\n\n"
     )
 
+    entity_slugs_on_disk, concept_slugs_on_disk = _collect_existing_slugs(wiki)
+
+    def _resolve_slug(item: dict, prefix: str) -> str:
+        existing = entity_slugs_on_disk if prefix == "entities" else concept_slugs_on_disk
+        raw = _slugify(item.get("slug") or item.get("name", ""))
+        return _canonical_slug(raw, existing)
+
     related_lines: list[str] = []
     for item in extracted.entities:
-        slug = _slugify(item.get("slug") or item.get("name", ""))
+        slug = _resolve_slug(item, "entities")
         if slug:
             related_lines.append(
-                f"- [{item.get('name', slug)}](entity_{slug}.md)"
+                f"- [{item.get('name', slug)}](entities/{slug}.md)"
             )
     for item in extracted.concepts:
-        slug = _slugify(item.get("slug") or item.get("name", ""))
+        slug = _resolve_slug(item, "concepts")
         if slug:
             related_lines.append(
-                f"- [{item.get('name', slug)}](concept_{slug}.md)"
+                f"- [{item.get('name', slug)}](concepts/{slug}.md)"
             )
     related_section = (
         "\n\n## Related\n\n" + "\n".join(related_lines) + "\n"
@@ -237,11 +305,15 @@ def ingest_note(
     def _merge_and_register(
         items: list[dict], prefix: str, registry: list[IndexEntry],
     ) -> None:
+        existing_slugs = entity_slugs_on_disk if prefix == "entities" else concept_slugs_on_disk
         for item in items:
-            slug = _slugify(item.get("slug") or item.get("name", ""))
+            raw = _slugify(item.get("slug") or item.get("name", ""))
+            slug = _canonical_slug(raw, existing_slugs) if raw else ""
             if not slug:
                 continue
-            filename = f"{prefix}_{slug}.md"
+            # Keep slug set current so later items in the same batch dedupe too.
+            existing_slugs.add(slug)
+            filename = f"{prefix}/{slug}.md"
             target = wiki / filename
             try:
                 _merge_page(
@@ -260,8 +332,8 @@ def ingest_note(
                 summary=(item.get("contribution", "").split("\n")[0][:80]),
             ))
 
-    _merge_and_register(extracted.entities, "entity", entities)
-    _merge_and_register(extracted.concepts, "concept", concepts)
+    _merge_and_register(extracted.entities, "entities", entities)
+    _merge_and_register(extracted.concepts, "concepts", concepts)
 
     _write_index(wiki, sources=sources, entities=entities, concepts=concepts)
     _append_log(
@@ -272,6 +344,48 @@ def ingest_note(
 
     return source_page
 
+
+# ─── migration ───────────────────────────────────────────────────────────
+
+def migrate_wiki_to_subdirs(wiki_dir: Path | None = None) -> int:
+    wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
+    if not wiki.exists():
+        return 0
+    _ensure_subdirs(wiki)
+    moved = 0
+    for f in list(wiki.iterdir()):
+        if not f.is_file() or f.suffix != ".md":
+            continue
+        name = f.name
+        if name.startswith("summary_"):
+            target = wiki / "sources" / name
+            f.rename(target)
+            moved += 1
+        elif name.startswith("entity_"):
+            target = wiki / "entities" / name
+            f.rename(target)
+            moved += 1
+        elif name.startswith("concept_"):
+            target = wiki / "concepts" / name
+            f.rename(target)
+            moved += 1
+    if moved:
+        # Rewrite index.md links to include subdir prefix.
+        idx = wiki / "index.md"
+        if idx.exists():
+            text = idx.read_text(encoding="utf-8")
+            replacements = {
+                "](summary_": "](sources/summary_",
+                "](entity_": "](entities/entity_",
+                "](concept_": "](concepts/concept_",
+            }
+            for old, new in replacements.items():
+                text = text.replace(old, new)
+            idx.write_text(text, encoding="utf-8")
+    return moved
+
+
+# ─── query ───────────────────────────────────────────────────────────────
 
 def _tokenize(text: str) -> set[str]:
     import re
@@ -291,8 +405,8 @@ def _pick_relevant_pages(
     top_n: int = 5,
 ) -> list[Path]:
     wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
-    index_path = wiki / "index.md"
-    if not index_path.exists():
+    idx = wiki / "index.md"
+    if not idx.exists():
         return []
 
     q_tokens = _tokenize(question)
@@ -301,6 +415,9 @@ def _pick_relevant_pages(
     scored: list[tuple[float, Path]] = []
 
     candidates: list[Path] = []
+    for pattern in ("sources/*.md", "entities/*.md", "concepts/*.md"):
+        candidates.extend(wiki.glob(pattern))
+    # Also check legacy flat files (pre-migration).
     for pattern in ("summary_*.md", "entity_*.md", "concept_*.md"):
         candidates.extend(wiki.glob(pattern))
 
