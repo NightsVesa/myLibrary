@@ -533,11 +533,14 @@ class MainWindow:
     def _reset_sleep_timer(self) -> None:
         if self._sleep_after_id is not None:
             self.root.after_cancel(self._sleep_after_id)
+        # Only schedule auto-sleep when the pet is idling.
+        if self._state != "idle":
+            self._sleep_after_id = None
+            return
         self._sleep_after_id = self.root.after(SLEEP_IDLE_MS, self._go_sleep)
 
     def _go_sleep(self) -> None:
-        if self._state in ("attack", "happy"):
-            self._reset_sleep_timer()
+        if self._state != "idle":
             return
         self._set_state("sleep")
 
