@@ -1,8 +1,20 @@
 # config.py
 import os
+import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent
+from dotenv import load_dotenv
+
+if getattr(sys, "frozen", False):
+    _BUNDLE_DIR = Path(sys._MEIPASS)
+    BASE_DIR = Path(sys.executable).parent
+else:
+    _BUNDLE_DIR = Path(__file__).parent
+    BASE_DIR = Path(__file__).parent
+
+load_dotenv(BASE_DIR / ".env")
+
+ASSETS_DIR = _BUNDLE_DIR / "assets"
 NOTES_DIR = BASE_DIR / "notes"
 NOTES_DIR.mkdir(exist_ok=True)
 
