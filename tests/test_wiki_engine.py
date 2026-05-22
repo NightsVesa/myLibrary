@@ -430,14 +430,53 @@ def test_migrate_moves_summary_files(tmp_path):
     assert n == 3
 
     assert (wiki / "sources" / "summary_a.md").exists()
-    assert (wiki / "entities" / "entity_b.md").exists()
-    assert (wiki / "concepts" / "concept_c.md").exists()
+    assert (wiki / "entities" / "b.md").exists()
+    assert (wiki / "concepts" / "c.md").exists()
     assert not (wiki / "summary_a.md").exists()
 
     idx = (wiki / "index.md").read_text(encoding="utf-8")
     assert "sources/summary_a.md" in idx
-    assert "entities/entity_b.md" in idx
-    assert "concepts/concept_c.md" in idx
+    assert "entities/b.md" in idx
+    assert "concepts/c.md" in idx
+
+
+def test_migrate_strips_prefix_from_already_migrated(tmp_path):
+    """Files already in subdirs with 'entity_' prefix get cleaned up."""
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    (wiki / "entities").mkdir()
+    (wiki / "concepts").mkdir()
+    (wiki / "entities" / "entity_openai.md").write_text("# OpenAI", encoding="utf-8")
+    (wiki / "concepts" / "concept_ml.md").write_text("# ML", encoding="utf-8")
+    (wiki / "index.md").write_text(
+        "- [E](entities/entity_openai.md) — e\n- [C](concepts/concept_ml.md) — c\n",
+        encoding="utf-8",
+    )
+
+    n = migrate_wiki_to_subdirs(wiki)
+    assert n == 2
+    assert (wiki / "entities" / "openai.md").exists()
+    assert not (wiki / "entities" / "entity_openai.md").exists()
+    assert (wiki / "concepts" / "ml.md").exists()
+    assert not (wiki / "concepts" / "concept_ml.md").exists()
+
+    idx = (wiki / "index.md").read_text(encoding="utf-8")
+    assert "entities/openai.md" in idx
+    assert "concepts/ml.md" in idx
+
+
+def test_migrate_deletes_prefixed_when_target_exists(tmp_path):
+    """Prefixed copy is deleted when newer correct-named file already present."""
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    (wiki / "entities").mkdir()
+    (wiki / "entities" / "entity_openai.md").write_text("old", encoding="utf-8")
+    (wiki / "entities" / "openai.md").write_text("new", encoding="utf-8")
+
+    n = migrate_wiki_to_subdirs(wiki)
+    assert n == 1
+    assert (wiki / "entities" / "openai.md").read_text(encoding="utf-8") == "new"
+    assert not (wiki / "entities" / "entity_openai.md").exists()
 
 
 # --- _pick_relevant_pages & query_wiki ------------------------------------

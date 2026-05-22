@@ -348,39 +348,77 @@ def ingest_note(
 # ─── migration ───────────────────────────────────────────────────────────
 
 def migrate_wiki_to_subdirs(wiki_dir: Path | None = None) -> int:
+    """One-shot: move flat files into subdirs, stripping prefix from filename.
+
+    Old layout (flat):                New layout (subdirs):
+      summary_*.md                  → sources/summary_*.md
+      entity_<slug>.md              → entities/<slug>.md  (prefix stripped)
+      concept_<slug>.md             → concepts/<slug>.md  (prefix stripped)
+
+    Also fixes up files already moved into subdirs by a prior buggy migration
+    that kept the prefix (e.g. entities/entity_openai.md → entities/openai.md).
+    """
     wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
     if not wiki.exists():
         return 0
     _ensure_subdirs(wiki)
     moved = 0
+
+    def _strip_prefix(prefix: str, name: str) -> str:
+        return name[len(prefix):]
+
+    # Pass 1: flat files in wiki root.
     for f in list(wiki.iterdir()):
         if not f.is_file() or f.suffix != ".md":
             continue
         name = f.name
         if name.startswith("summary_"):
-            target = wiki / "sources" / name
-            f.rename(target)
+            f.rename(wiki / "sources" / name)
             moved += 1
         elif name.startswith("entity_"):
-            target = wiki / "entities" / name
-            f.rename(target)
+            f.rename(wiki / "entities" / _strip_prefix("entity_", name))
             moved += 1
         elif name.startswith("concept_"):
-            target = wiki / "concepts" / name
-            f.rename(target)
+            f.rename(wiki / "concepts" / _strip_prefix("concept_", name))
             moved += 1
+
+    # Pass 2: files already inside subdirs that still carry the prefix
+    # (from a prior migration that omitted the strip step).
+    for prefix, sub in (("entity_", "entities"), ("concept_", "concepts")):
+        sd = wiki / sub
+        if not sd.exists():
+            continue
+        for f in list(sd.iterdir()):
+            if f.name.startswith(prefix):
+                stripped = _strip_prefix(prefix, f.name)
+                target = sd / stripped
+                if target.exists():
+                    # A newer ingest already created the correctly named file.
+                    # Delete the stale prefixed copy.
+                    f.unlink()
+                else:
+                    f.rename(target)
+                moved += 1
+
     if moved:
-        # Rewrite index.md links to include subdir prefix.
         idx = wiki / "index.md"
         if idx.exists():
             text = idx.read_text(encoding="utf-8")
-            replacements = {
-                "](summary_": "](sources/summary_",
-                "](entity_": "](entities/entity_",
-                "](concept_": "](concepts/concept_",
-            }
-            for old, new in replacements.items():
-                text = text.replace(old, new)
+            # Normalize all links to the canonical subdir form.
+            for prefix, sub in (
+                ("entity_", "entities/"),
+                ("concept_", "concepts/"),
+            ):
+                # Both "entities/entity_" and bare "entity_" → "entities/"
+                text = text.replace(
+                    f"]({sub}{prefix}", f"]({sub}"
+                )
+                text = text.replace(
+                    f"]({prefix}", f"]({sub}"
+                )
+            # Sources: bare "summary_" and "sources/summary_" → "sources/summary_"
+            text = text.replace("](sources/summary_", "](sources/summary_")
+            text = text.replace("](summary_", "](sources/summary_")
             idx.write_text(text, encoding="utf-8")
     return moved
 
