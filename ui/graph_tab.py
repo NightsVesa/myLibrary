@@ -16,7 +16,7 @@ TEXT_MAIN = "#2c3e50"
 TEXT_LIGHT = "#6b7c8f"
 
 CHROME_H = 32        # title-bar height
-HANDLE_SIZE = 18      # resize handle
+GRIP = 28  # resize-edge sensitivity (px)
 
 NODE_R = {"source": 12, "entity": 10, "concept": 9}
 NODE_FILL = {
@@ -154,6 +154,7 @@ class _GraphWindow:
         self._pan_start = (0.0, 0.0)
         self._drag_nid: str | None = None
         self._mode: str | None = None   # None | "drag" | "resize"
+        self._resize_edge = ""          # "right", "bottom", or "rightbottom"
         self._drag_origin = (0, 0)
         self._scale = 1.0
 
@@ -192,6 +193,7 @@ class _GraphWindow:
         c.bind("<B1-Motion>", self._on_motion)
         c.bind("<ButtonRelease-1>", self._on_release)
         c.bind("<MouseWheel>", self._on_scroll)
+        c.bind("<Motion>", self._on_hover)
         self.win.bind("<Configure>", self._on_resize)
 
     def _on_press(self, e) -> None:
@@ -203,8 +205,11 @@ class _GraphWindow:
         if self._hit_refresh(e.x, e.y):
             self._reload()
             return
-        # Resize handle
-        if e.x >= self.w - HANDLE_SIZE and e.y >= self.h - HANDLE_SIZE:
+        # Resize: any edge within GRIP px
+        on_right  = e.x >= self.w - GRIP
+        on_bottom = e.y >= self.h - GRIP
+        if on_right or on_bottom:
+            self._resize_edge = ("right" if on_right else "") + ("bottom" if on_bottom else "")
             self._mode = "resize"
             self._drag_origin = (e.x_root, e.y_root)
             return
@@ -215,14 +220,11 @@ class _GraphWindow:
                                  e.y_root - self.win.winfo_y())
             return
         # Node hit test (check after chrome)
-        ox, oy = self._pan["x"], self._pan["y"]
-        for nd in reversed(self._layout_nodes):
-            nx, ny = nd["x"] * self._scale + ox, nd["y"] * self._scale + oy
-            r = NODE_R.get(self._node_kind(nd["id"]), 10)
-            if abs(e.x - nx) < r + 4 and abs(e.y - ny) < r + 4:
-                self._drag_nid = nd["id"]
-                self._mode = "node_drag"
-                return
+        nid = self._hit_node(e.x, e.y)
+        if nid is not None:
+            self._drag_nid = nid
+            self._mode = "node_drag"
+            return
         # Background pan
         self._mode = "pan"
         self._pan_start = (e.x - self._pan["x"], e.y - self._pan["y"])
@@ -236,11 +238,15 @@ class _GraphWindow:
         elif self._mode == "resize":
             dx = e.x_root - self._drag_origin[0]
             dy = e.y_root - self._drag_origin[1]
-            nw = max(MIN_W, self.w + dx)
-            nh = max(MIN_H, self.h + dy)
+            nw = self.w + (dx if "right" in self._resize_edge else 0)
+            nh = self.h + (dy if "bottom" in self._resize_edge else 0)
+            nw = max(MIN_W, nw)
+            nh = max(MIN_H, nh)
             if nw != self.w or nh != self.h:
                 self.w, self.h = nw, nh
                 self.win.geometry(f"{nw}x{nh}")
+                self._canvas.place(width=nw, height=nh)
+                self._canvas.config(width=nw, height=nh)
                 self._drag_origin = (e.x_root, e.y_root)
         elif self._mode == "pan":
             self._pan["x"] = e.x - self._pan_start[0]
@@ -257,12 +263,38 @@ class _GraphWindow:
 
     def _on_release(self, e) -> None:
         if self._mode == "node_drag" and self._drag_nid is not None:
-            nid = self._drag_nid
-            self._drag_nid = None
-            # If barely moved, treat as click → open page
-            self._open_page(nid)
+            self._open_page(self._drag_nid)
         self._mode = None
         self._drag_nid = None
+        self._resize_edge = ""
+
+    def _on_hover(self, e) -> None:
+        on_right  = e.x >= self.w - GRIP
+        on_bottom = e.y >= self.h - GRIP
+        # Title bar cursor
+        if e.y < CHROME_H and not on_right:
+            self._canvas.config(cursor="fleur")
+        elif on_right and on_bottom:
+            self._canvas.config(cursor="sizing_se")
+        elif on_right:
+            self._canvas.config(cursor="sizing_e")
+        elif on_bottom:
+            self._canvas.config(cursor="sizing_s")
+        # Hover on a node → hand cursor
+        elif self._hit_node(e.x, e.y) is not None:
+            self._canvas.config(cursor="hand2")
+        else:
+            self._canvas.config(cursor="arrow")
+
+    def _hit_node(self, mx: float, my: float) -> str | None:
+        ox, oy = self._pan["x"], self._pan["y"]
+        for nd in reversed(self._layout_nodes):
+            nx = nd["x"] * self._scale + ox
+            ny = nd["y"] * self._scale + oy + CHROME_H
+            r = NODE_R.get(self._node_kind(nd["id"]), 10) + 4
+            if abs(mx - nx) < r and abs(my - ny) < r:
+                return nd["id"]
+        return None
 
     def _on_scroll(self, e) -> None:
         factor = 1.08 if e.delta > 0 else 0.92
@@ -273,6 +305,7 @@ class _GraphWindow:
         if e.widget is not self.win:
             return
         self.w, self.h = e.width, e.height
+        self._canvas.place(width=self.w, height=self.h)
         self._canvas.config(width=self.w, height=self.h)
         self._draw()
 
@@ -391,11 +424,16 @@ class _GraphWindow:
             text="✕", fill=TEXT_LIGHT, font=("Microsoft YaHei", 8, "bold"),
         )
 
-        # Resize handle
-        hx, hy = self.w - HANDLE_SIZE, self.h - HANDLE_SIZE
-        c.create_polygon(
-            hx, self.h, self.w, hy, self.w, self.h,
-            fill="#e0dce8", outline="",
+        # Resize grip — lines in bottom-right corner
+        grip_x, grip_y = self.w - GRIP, self.h - GRIP
+        for i in range(4):
+            lx = grip_x + i * 8
+            c.create_line(lx, self.h, self.w, grip_y + i * 8,
+                          fill="#c8c0d8", width=1.5)
+        # Also draw a subtle edge highlight on the right+bottom border
+        c.create_rectangle(
+            0, 0, self.w - 1, self.h - 1,
+            outline="#d4b8f0", width=1,
         )
 
     # ── hit-test helpers ─────────────────────────────────────────────────
