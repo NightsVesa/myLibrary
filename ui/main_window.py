@@ -23,7 +23,7 @@ from ui.input_tab import InputTab
 from ui.upload_tab import UploadTab, SUPPORTED as UPLOAD_HANDLERS
 from ui.search_tab import SearchTab
 from ui.chat_tab import ChatTab
-from ui.graph_tab import GraphTab
+from ui.graph_tab import GraphTab, _GraphWindow
 
 PET_DIR = ASSETS_DIR
 PET_STATES = ("idle", "attack", "happy", "sleep", "eat")
@@ -424,6 +424,7 @@ class MainWindow:
         self._panel: tk.Toplevel | None = None
         self._panel_bg: ImageTk.PhotoImage | None = None
         self._active_idx: int | None = None
+        self._graph_win: _GraphWindow | None = None
         self._panel_pinned = False
 
         self.canvas.bind("<Enter>", self._on_activity_enter)
@@ -644,13 +645,24 @@ class MainWindow:
         self._toggle_panel(idx, pinned=True)
 
     def _toggle_panel(self, idx: int, pinned: bool) -> None:
+        # Special case: graph opens as a standalone resizable window.
+        label, emoji, tab_cls, hint, accent, _shadow, pale_bg, edge_color = ACTIONS[idx]
+        if tab_cls is GraphTab:
+            if self._graph_win and self._graph_win.win.winfo_exists():
+                self._close_graph()
+                return
+            self._close_panel()
+            self._graph_win = _GraphWindow(
+                self.root, bg_color=pale_bg, edge_color=edge_color, main=self,
+            )
+            return
+
         if self._active_idx == idx and self._panel and self._panel.winfo_exists():
             self._close_panel()
             return
         self._close_panel()
         self._active_idx = idx
         self._panel_pinned = pinned
-        label, emoji, tab_cls, hint, accent, _shadow, pale_bg, edge_color = ACTIONS[idx]
         if tab_cls is ChatTab:
             pinned = True
 
@@ -785,6 +797,9 @@ class MainWindow:
         self._panel_bg = None
         self._active_idx = None
         self._panel_pinned = False
+
+    def _close_graph(self) -> None:
+        self._graph_win = None
 
     def _open_reader(self, path: Path) -> None:
         """Open a wiki page in the reader window (reuse SearchTab's reader)."""

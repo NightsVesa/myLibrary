@@ -18,12 +18,13 @@ def test_force_step_converges():
     assert moved > 0.0
 
 
-def test_graph_tab_creates_frame():
+def test_graph_window_creates_toplevel():
     root = tk.Tk()
     root.withdraw()
     try:
-        from ui.graph_tab import GraphTab
-        tab = GraphTab(root)
-        assert isinstance(tab.frame, tk.Frame)
+        from ui.graph_tab import _GraphWindow
+        gw = _GraphWindow(root)
+        assert isinstance(gw.win, tk.Toplevel)
+        gw.win.destroy()
     finally:
         root.destroy()

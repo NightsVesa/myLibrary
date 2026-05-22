@@ -1,43 +1,38 @@
-"""Knowledge graph tab: Canvas-rendered force-directed node-link diagram."""
+"""Knowledge graph: standalone resizable window with force-directed node-link diagram."""
 
 import math
 import tkinter as tk
 from pathlib import Path
-from collections.abc import Callable
-from dataclasses import dataclass
 
 from llm.graph_data import parse_wiki_graph, Graph, Node as GNode, Edge as GEdge
-from ui.cartoon_widgets import (
-    FONT_BODY,
-    cartoon_label, CartoonButton,
-)
 
 # ── constants ────────────────────────────────────────────────────────────
 
-WIDTH, HEIGHT = 680, 440
+DEFAULT_W, DEFAULT_H = 860, 580
+MIN_W, MIN_H = 480, 340
 BG = "#fafbff"
+TRANSPARENT = "#ff00ff"
+TEXT_MAIN = "#2c3e50"
+TEXT_LIGHT = "#6b7c8f"
 
-NODE_R = {
-    "source":  12,
-    "entity":  10,
-    "concept":  9,
-}
+CHROME_H = 32        # title-bar height
+HANDLE_SIZE = 18      # resize handle
 
+NODE_R = {"source": 12, "entity": 10, "concept": 9}
 NODE_FILL = {
-    "source":  "#a8d4f4",   # sky (matches 输入)
-    "entity":  "#a8eedd",   # mint (matches 上传)
-    "concept": "#ffe4a8",   # orange (matches 问答)
+    "source":  "#a8d4f4",
+    "entity":  "#a8eedd",
+    "concept": "#ffe4a8",
 }
-
-NODE_EDGE_COLOR = {
+NODE_EDGE = {
     "source":  "#5fa8d4",
     "entity":  "#3db88a",
     "concept": "#dba42a",
 }
-
 LINK_COLOR = "#d0d8e8"
 FONT_NODE = ("Microsoft YaHei", 7)
-FORCE_ITERS = 50
+FONT_TITLE = ("Microsoft YaHei", 10, "bold")
+FORCE_ITERS = 60
 DAMPING = 0.85
 
 
@@ -51,10 +46,7 @@ def _force_step(
     height: float,
     temp: float,
 ) -> float:
-    """One iteration of spring-electric force layout.
-
-    Returns total displacement (for convergence check).
-    """
+    """One iteration of spring-electric force layout. Returns total displacement."""
     n = len(nodes)
     if n == 0:
         return 0.0
@@ -64,7 +56,7 @@ def _force_step(
     fy = [0.0] * n
 
     # Repulsion: all-pairs Coulomb
-    k_r = 5000.0
+    k_r = 6000.0
     for i in range(n):
         xi, yi = nodes[i]["x"], nodes[i]["y"]
         for j in range(i + 1, n):
@@ -78,8 +70,8 @@ def _force_step(
             fy[j] -= (dy / dist) * force
 
     # Attraction: edges are springs
-    k_s = 0.06
-    rest = 120.0
+    k_s = 0.05
+    rest = 130.0
     for src, tgt in edges:
         i, j = idx.get(src), idx.get(tgt)
         if i is None or j is None:
@@ -95,7 +87,7 @@ def _force_step(
 
     # Center gravity
     cx, cy = width / 2, height / 2
-    g_force = 0.008
+    g_force = 0.01
     for i in range(n):
         fx[i] += (cx - nodes[i]["x"]) * g_force
         fy[i] += (cy - nodes[i]["y"]) * g_force
@@ -105,8 +97,7 @@ def _force_step(
     for i in range(n):
         dx = fx[i] * temp * DAMPING
         dy = fy[i] * temp * DAMPING
-        # Clamp per-step movement
-        max_step = 25.0
+        max_step = 30.0
         dx = max(-max_step, min(max_step, dx))
         dy = max(-max_step, min(max_step, dy))
         nodes[i]["x"] = max(30.0, min(width - 30.0, nodes[i]["x"] + dx))
@@ -118,192 +109,313 @@ def _force_step(
 
 def _layout(graph: Graph, width: float, height: float) -> list[dict]:
     """Run full force layout, return list of {id, x, y}."""
+    import random
     nodes: list[dict] = []
     for nd in graph.nodes:
-        # Seed around center with small random offset
-        import random
         nodes.append({
             "id": nd.id,
-            "x": width / 2 + random.uniform(-60, 60),
-            "y": height / 2 + random.uniform(-60, 60),
+            "x": width / 2 + random.uniform(-80, 80),
+            "y": height / 2 + random.uniform(-80, 80),
         })
 
     edges = [(e.source, e.target) for e in graph.edges]
-
-    temp = 3.0
+    temp = 4.0
     for _ in range(FORCE_ITERS):
         moved = _force_step(nodes, edges, width=width, height=height, temp=temp)
-        temp *= 0.92
+        temp *= 0.90
         if moved < 0.5:
             break
 
     return nodes
 
 
-# ── tab ──────────────────────────────────────────────────────────────────
+# ── standalone window ────────────────────────────────────────────────────
 
-class GraphTab:
-    def __init__(self, parent, bg_color: str = BG,
-                 edge_color: str = "#c0cde0", *, main=None) -> None:
-        self.frame = tk.Frame(parent, bg=bg_color)
+class _GraphWindow:
+    """Resizable, draggable graph window (no OS chrome).
+
+    Chrome items (title bar, close button, resize handle, refresh button)
+    are drawn on the canvas so everything stays inside the transparent-color
+    window.
+    """
+
+    def __init__(self, root, *, bg_color: str = BG,
+                 edge_color: str = "#c0cde0", main=None) -> None:
+        self.root = root
         self._bg = bg_color
         self._edge = edge_color
         self._main = main
+        self.w = DEFAULT_W
+        self.h = DEFAULT_H
+
         self._graph: Graph | None = None
-        self._layout: list[dict] = []
-        self._node_items: dict[str, int] = {}   # node id → canvas oval
-        self._label_items: dict[str, int] = {}  # node id → canvas text
-        self._edge_items: list[int] = []
-        self._drag_idx: int | None = None
+        self._layout_nodes: list[dict] = []
         self._pan = {"x": 0.0, "y": 0.0}
         self._pan_start = (0.0, 0.0)
-        self._build()
+        self._drag_nid: str | None = None
+        self._mode: str | None = None   # None | "drag" | "resize"
+        self._drag_origin = (0, 0)
+        self._scale = 1.0
 
-    def _build(self) -> None:
-        self.frame.grid_columnconfigure(0, weight=1)
-        self.frame.grid_rowconfigure(1, weight=1)
+        self._build_window()
+        self._build_canvas()
+        self._bind_events()
+        self.win.after(100, self._reload)
 
-        # ── toolbar ──────────────────────────────────────────────────────
-        bar = tk.Frame(self.frame, bg=self._bg)
-        bar.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
-        bar.grid_columnconfigure(1, weight=1)
+    # ── window ───────────────────────────────────────────────────────────
 
-        cartoon_label(bar, "节点 — 拖拽平移 | 滚轮缩放 | 点击节点打开页面", kind="hint").grid(
-            row=0, column=0, sticky="w",
+    def _build_window(self) -> None:
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.config(bg=TRANSPARENT)
+        win.wm_attributes("-transparentcolor", TRANSPARENT)
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        x = (sw - self.w) // 2
+        y = (sh - self.h) // 2
+        win.geometry(f"{self.w}x{self.h}+{x}+{y}")
+        self.win = win
+
+    def _build_canvas(self) -> None:
+        c = tk.Canvas(
+            self.win, width=self.w, height=self.h,
+            bg=TRANSPARENT, highlightthickness=0, borderwidth=0,
         )
+        c.place(x=0, y=0, width=self.w, height=self.h)
+        self._canvas = c
 
-        CartoonButton(
-            bar, "🔄 刷新", command=self._reload,
-            kind="sky", height=32,
-        ).grid(row=0, column=1, padx=(8, 0), sticky="e")
+    # ── events ───────────────────────────────────────────────────────────
 
-        # ── canvas ───────────────────────────────────────────────────────
-        self._canvas = tk.Canvas(
-            self.frame, width=WIDTH, height=HEIGHT,
-            bg="#fdfdfe", highlightthickness=1,
-            highlightbackground="#e0e5f0", borderwidth=0,
-        )
-        self._canvas.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0, 4))
+    def _bind_events(self) -> None:
+        c = self._canvas
+        c.bind("<Button-1>", self._on_press)
+        c.bind("<B1-Motion>", self._on_motion)
+        c.bind("<ButtonRelease-1>", self._on_release)
+        c.bind("<MouseWheel>", self._on_scroll)
+        self.win.bind("<Configure>", self._on_resize)
 
-        self._canvas.bind("<Button-1>", self._on_press)
-        self._canvas.bind("<B1-Motion>", self._on_drag)
-        self._canvas.bind("<ButtonRelease-1>", self._on_release)
-        self._canvas.bind("<MouseWheel>", self._on_scroll)
+    def _on_press(self, e) -> None:
+        # Close-button hit test
+        if self._hit_close(e.x, e.y):
+            self._close()
+            return
+        # Refresh-button hit test
+        if self._hit_refresh(e.x, e.y):
+            self._reload()
+            return
+        # Resize handle
+        if e.x >= self.w - HANDLE_SIZE and e.y >= self.h - HANDLE_SIZE:
+            self._mode = "resize"
+            self._drag_origin = (e.x_root, e.y_root)
+            return
+        # Title bar drag
+        if e.y < CHROME_H:
+            self._mode = "drag"
+            self._drag_origin = (e.x_root - self.win.winfo_x(),
+                                 e.y_root - self.win.winfo_y())
+            return
+        # Node hit test (check after chrome)
+        ox, oy = self._pan["x"], self._pan["y"]
+        for nd in reversed(self._layout_nodes):
+            nx, ny = nd["x"] * self._scale + ox, nd["y"] * self._scale + oy
+            r = NODE_R.get(self._node_kind(nd["id"]), 10)
+            if abs(e.x - nx) < r + 4 and abs(e.y - ny) < r + 4:
+                self._drag_nid = nd["id"]
+                self._mode = "node_drag"
+                return
+        # Background pan
+        self._mode = "pan"
+        self._pan_start = (e.x - self._pan["x"], e.y - self._pan["y"])
 
-        self.frame.after(100, self._reload)
+    def _on_motion(self, e) -> None:
+        if self._mode == "drag":
+            self.win.geometry(
+                f"+{e.x_root - self._drag_origin[0]}"
+                f"+{e.y_root - self._drag_origin[1]}"
+            )
+        elif self._mode == "resize":
+            dx = e.x_root - self._drag_origin[0]
+            dy = e.y_root - self._drag_origin[1]
+            nw = max(MIN_W, self.w + dx)
+            nh = max(MIN_H, self.h + dy)
+            if nw != self.w or nh != self.h:
+                self.w, self.h = nw, nh
+                self.win.geometry(f"{nw}x{nh}")
+                self._drag_origin = (e.x_root, e.y_root)
+        elif self._mode == "pan":
+            self._pan["x"] = e.x - self._pan_start[0]
+            self._pan["y"] = e.y - self._pan_start[1]
+            self._draw()
+        elif self._mode == "node_drag" and self._drag_nid is not None:
+            ox, oy = self._pan["x"], self._pan["y"]
+            for nd in self._layout_nodes:
+                if nd["id"] == self._drag_nid:
+                    nd["x"] = (e.x - ox) / self._scale
+                    nd["y"] = (e.y - oy) / self._scale
+                    break
+            self._draw()
+
+    def _on_release(self, e) -> None:
+        if self._mode == "node_drag" and self._drag_nid is not None:
+            nid = self._drag_nid
+            self._drag_nid = None
+            # If barely moved, treat as click → open page
+            self._open_page(nid)
+        self._mode = None
+        self._drag_nid = None
+
+    def _on_scroll(self, e) -> None:
+        factor = 1.08 if e.delta > 0 else 0.92
+        self._scale = max(0.25, min(3.0, self._scale * factor))
+        self._draw()
+
+    def _on_resize(self, e) -> None:
+        if e.widget is not self.win:
+            return
+        self.w, self.h = e.width, e.height
+        self._canvas.config(width=self.w, height=self.h)
+        self._draw()
 
     # ── data ─────────────────────────────────────────────────────────────
 
     def _reload(self) -> None:
         import config
         self._graph = parse_wiki_graph(config.WIKI_DIR)
-        self._layout = _layout(self._graph, WIDTH, HEIGHT)
+        content_w, content_h = self.w, self.h - CHROME_H
+        self._layout_nodes = _layout(self._graph, content_w, content_h)
+        self._scale = 1.0
+        self._pan = {"x": 0.0, "y": CHROME_H / 2.0}
         self._draw()
 
-    def _draw(self) -> None:
-        self._canvas.delete("all")
-        self._node_items.clear()
-        self._label_items.clear()
-        self._edge_items.clear()
+    def _node_kind(self, nid: str) -> str:
+        if not self._graph:
+            return "source"
+        for n in self._graph.nodes:
+            if n.id == nid:
+                return n.kind
+        return "source"
 
+    def _node_title(self, nid: str) -> str:
+        if not self._graph:
+            return nid
+        for n in self._graph.nodes:
+            if n.id == nid:
+                return n.title
+        return nid
+
+    def _draw(self) -> None:
+        c = self._canvas
+        c.delete("all")
         if not self._graph:
             return
 
         ox, oy = self._pan["x"], self._pan["y"]
 
-        # Edges
-        idx = {nd["id"]: (nd["x"] + ox, nd["y"] + oy) for nd in self._layout}
+        # ── Edges ───────────────────────────────────────────────────────
         for e in self._graph.edges:
-            if e.source in idx and e.target in idx:
-                x1, y1 = idx[e.source]
-                x2, y2 = idx[e.target]
-                lid = self._canvas.create_line(
-                    x1, y1, x2, y2, fill=LINK_COLOR, width=1.5,
-                )
-                self._canvas.tag_lower(lid)
-                self._edge_items.append(lid)
+            snd = next((n for n in self._layout_nodes if n["id"] == e.source), None)
+            tnd = next((n for n in self._layout_nodes if n["id"] == e.target), None)
+            if snd and tnd:
+                x1 = snd["x"] * self._scale + ox
+                y1 = snd["y"] * self._scale + oy + CHROME_H
+                x2 = tnd["x"] * self._scale + ox
+                y2 = tnd["y"] * self._scale + oy + CHROME_H
+                lid = c.create_line(x1, y1, x2, y2, fill=LINK_COLOR, width=1.2)
+                c.tag_lower(lid)
 
-        # Nodes (ovals) + labels
-        for nd in self._layout:
-            x, y = nd["x"] + ox, nd["y"] + oy
-            gnode = self._find_node(nd["id"])
-            kind = gnode.kind if gnode else "source"
-            r = NODE_R.get(kind, 10)
+        # ── Nodes ───────────────────────────────────────────────────────
+        for nd in self._layout_nodes:
+            x = nd["x"] * self._scale + ox
+            y = nd["y"] * self._scale + oy + CHROME_H
+            kind = self._node_kind(nd["id"])
+            r = NODE_R.get(kind, 10) * self._scale
+            r = max(4, min(20, r))
             fill = NODE_FILL.get(kind, "#ccc")
-            outline = NODE_EDGE_COLOR.get(kind, "#999")
+            outline = NODE_EDGE.get(kind, "#999")
 
-            oval = self._canvas.create_oval(
+            c.create_oval(
                 x - r, y - r, x + r, y + r,
                 fill=fill, outline=outline, width=2,
-                tags=("node", nd["id"]),
             )
-            self._node_items[nd["id"]] = oval
 
-            title = gnode.title if gnode else nd["id"]
-            label = self._canvas.create_text(
-                x + r + 4, y, text=title,
-                anchor="w", fill="#2c3e50", font=FONT_NODE,
-                tags=("label", nd["id"]),
+            title = self._node_title(nd["id"])
+            fs = max(6, int(FONT_NODE[1] * self._scale))
+            c.create_text(
+                x + r + 3, y, text=title,
+                anchor="w", fill=TEXT_MAIN, font=(FONT_NODE[0], fs),
             )
-            self._label_items[nd["id"]] = label
 
-    def _find_node(self, nid: str) -> GNode | None:
-        if not self._graph:
-            return None
-        for n in self._graph.nodes:
-            if n.id == nid:
-                return n
-        return None
+        # ── Chrome ──────────────────────────────────────────────────────
+        self._draw_chrome()
 
-    # ── interaction ──────────────────────────────────────────────────────
+    def _draw_chrome(self) -> None:
+        c = self._canvas
+        # Title-bar background
+        c.create_rectangle(0, 0, self.w, CHROME_H, fill="#f0ecff", outline="")
+        # Bottom separator
+        c.create_line(0, CHROME_H, self.w, CHROME_H, fill="#d4b8f0", width=1)
 
-    def _on_press(self, e) -> None:
-        # Check if we hit a node
-        item = self._canvas.find_closest(e.x, e.y)
-        tags = self._canvas.gettags(item) if item else ()
-        for tag in tags:
-            if tag.startswith("entities/") or tag.startswith("concepts/") or tag.startswith("sources/"):
-                nid = tag
-                self._drag_idx = nid
-                return
-        # Pan
-        self._pan_start = (e.x - self._pan["x"], e.y - self._pan["y"])
+        # Title
+        c.create_text(
+            12, CHROME_H // 2, text="知识图谱",
+            anchor="w", fill=TEXT_MAIN, font=FONT_TITLE,
+        )
 
-    def _on_drag(self, e) -> None:
-        if self._drag_idx is not None:
-            # Drag node
-            for nd in self._layout:
-                if nd["id"] == self._drag_idx:
-                    nd["x"] = e.x - self._pan["x"]
-                    nd["y"] = e.y - self._pan["y"]
-                    break
-            self._draw()
-        else:
-            self._pan["x"] = e.x - self._pan_start[0]
-            self._pan["y"] = e.y - self._pan_start[1]
-            self._draw()
+        node_count = len(self._layout_nodes) if self._layout_nodes else 0
+        edge_count = len(self._graph.edges) if self._graph else 0
+        c.create_text(
+            110, CHROME_H // 2,
+            text=f"{node_count} 节点  ·  {edge_count} 关系",
+            anchor="w", fill=TEXT_LIGHT, font=("Microsoft YaHei", 8),
+        )
 
-    def _on_release(self, e) -> None:
-        if self._drag_idx is not None:
-            # If didn't drag far, treat as click → open page
-            self._drag_idx = None
-        # Open reader on click (only if didn't drag)
-        ox, oy = self._pan["x"], self._pan["y"]
-        for nd in self._layout:
-            x, y = nd["x"] + ox, nd["y"] + oy
-            if abs(e.x - x) < 24 and abs(e.y - y) < 24:
-                self._open_page(nd["id"])
-                return
-        self._drag_idx = None
+        # Refresh button
+        rfx1, rfy1, rfx2, rfy2 = self._refresh_rect()
+        c.create_polygon(
+            [rfx1, rfy1, rfx2, rfy1, rfx2, rfy2, rfx1, rfy2],
+            fill="#e8dcf8", outline="#c0a8e0", width=1,
+        )
+        c.create_text(
+            (rfx1 + rfx2) // 2, (rfy1 + rfy2) // 2,
+            text="🔄", font=("Segoe UI Emoji", 11),
+        )
 
-    def _on_scroll(self, e) -> None:
-        # Zoom via scaling node positions (simple: move toward/away from center)
-        scale = 1.1 if e.delta > 0 else 0.9
-        cx, cy = WIDTH / 2, HEIGHT / 2
-        for nd in self._layout:
-            nd["x"] = cx + (nd["x"] - cx) * scale
-            nd["y"] = cy + (nd["y"] - cy) * scale
-        self._draw()
+        # Close button
+        cx1, cy1, cx2, cy2 = self._close_rect()
+        c.create_polygon(
+            [cx1, cy1, cx2, cy1, cx2, cy2, cx1, cy2],
+            fill="#fdf2f2", outline="#f0c0c0", width=1,
+        )
+        c.create_text(
+            (cx1 + cx2) // 2, (cy1 + cy2) // 2,
+            text="✕", fill=TEXT_LIGHT, font=("Microsoft YaHei", 8, "bold"),
+        )
+
+        # Resize handle
+        hx, hy = self.w - HANDLE_SIZE, self.h - HANDLE_SIZE
+        c.create_polygon(
+            hx, self.h, self.w, hy, self.w, self.h,
+            fill="#e0dce8", outline="",
+        )
+
+    # ── hit-test helpers ─────────────────────────────────────────────────
+
+    def _refresh_rect(self) -> tuple[int, int, int, int]:
+        """(x1, y1, x2, y2) for the refresh button."""
+        return (self.w - 68, 4, self.w - 30, CHROME_H - 4)
+
+    def _close_rect(self) -> tuple[int, int, int, int]:
+        return (self.w - 26, 4, self.w - 6, CHROME_H - 4)
+
+    def _hit_close(self, x: int, y: int) -> bool:
+        cx1, cy1, cx2, cy2 = self._close_rect()
+        return cx1 <= x <= cx2 and cy1 <= y <= cy2
+
+    def _hit_refresh(self, x: int, y: int) -> bool:
+        rfx1, rfy1, rfx2, rfy2 = self._refresh_rect()
+        return rfx1 <= x <= rfx2 and rfy1 <= y <= rfy2
+
+    # ── actions ──────────────────────────────────────────────────────────
 
     def _open_page(self, nid: str) -> None:
         import config
@@ -312,3 +424,15 @@ class GraphTab:
             return
         if self._main:
             self._main._open_reader(path)
+
+    def _close(self) -> None:
+        if self._main:
+            self._main._close_graph()
+        self.win.destroy()
+
+
+# ── thin proxy for panel system (not used directly — _toggle_panel special-cases it) ──
+
+class GraphTab:
+    """Sentinel class so the ACTIONS tuple can reference a tab-like symbol."""
+    pass
