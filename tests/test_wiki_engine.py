@@ -258,6 +258,44 @@ def test_ingest_note_writes_summary_entities_concepts(wiki_dir, notes_dir, confi
     assert len(calls) == 3
 
 
+def test_ingest_note_summary_lists_related_pages(wiki_dir, notes_dir, config):
+    note = notes_dir / "ai.md"
+    note.write_text("content", encoding="utf-8")
+
+    extract_json = (
+        '{"summary": "A summary.",'
+        ' "entities": [{"name":"OpenAI","slug":"openai","contribution":"c"}],'
+        ' "concepts": [{"name":"ML","slug":"ml","contribution":"c"}],'
+        ' "update_targets": ["entity_openai.md","concept_ml.md"]}'
+    )
+
+    def fake_chat(_cfg, messages):
+        if "JSON" in messages[0].content:
+            return extract_json
+        return "# P\n\nbody\n"
+
+    with patch("llm.wiki_engine.chat", side_effect=fake_chat):
+        result = ingest_note(note, config, wiki_dir=wiki_dir)
+
+    body = result.read_text(encoding="utf-8")
+    assert "## Related" in body
+    assert "[OpenAI](entity_openai.md)" in body
+    assert "[ML](concept_ml.md)" in body
+
+
+def test_ingest_note_no_related_section_when_empty(wiki_dir, notes_dir, config):
+    note = notes_dir / "ai.md"
+    note.write_text("content", encoding="utf-8")
+    extract_json = (
+        '{"summary": "Only a summary.",'
+        ' "entities": [], "concepts": [], "update_targets": []}'
+    )
+    with patch("llm.wiki_engine.chat", return_value=extract_json):
+        result = ingest_note(note, config, wiki_dir=wiki_dir)
+    body = result.read_text(encoding="utf-8")
+    assert "## Related" not in body
+
+
 def test_ingest_note_merge_failure_is_isolated(wiki_dir, notes_dir, config):
     note = notes_dir / "ai.md"
     note.write_text("content", encoding="utf-8")

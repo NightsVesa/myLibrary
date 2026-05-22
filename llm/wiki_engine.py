@@ -202,8 +202,27 @@ def ingest_note(
         f"---\nsource: {note_path.name}\n"
         f"created: {datetime.now().strftime('%Y-%m-%d')}\n---\n\n"
     )
+
+    related_lines: list[str] = []
+    for item in extracted.entities:
+        slug = _slugify(item.get("slug") or item.get("name", ""))
+        if slug:
+            related_lines.append(
+                f"- [{item.get('name', slug)}](entity_{slug}.md)"
+            )
+    for item in extracted.concepts:
+        slug = _slugify(item.get("slug") or item.get("name", ""))
+        if slug:
+            related_lines.append(
+                f"- [{item.get('name', slug)}](concept_{slug}.md)"
+            )
+    related_section = (
+        "\n\n## Related\n\n" + "\n".join(related_lines) + "\n"
+        if related_lines else ""
+    )
+
     source_page.write_text(
-        frontmatter + f"# {title}\n\n{extracted.summary}\n",
+        frontmatter + f"# {title}\n\n{extracted.summary}\n" + related_section,
         encoding="utf-8",
     )
 
