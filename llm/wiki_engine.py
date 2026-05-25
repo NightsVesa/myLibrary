@@ -91,11 +91,11 @@ def _merge_page(
     source_filename: str,
     config: LLMConfig,
 ) -> None:
-    existing = target.read_text(encoding="utf-8") if target.exists() else ""
+    existing = target.read_text(encoding="utf-8")
     user_content = (
         f"Page title: {page_title}\n"
         f"New source: {source_filename}\n\n"
-        f"=== Existing page content ===\n{existing or '(empty — this is a new page)'}\n\n"
+        f"=== Existing page content ===\n{existing}\n\n"
         f"=== New contribution from this source ===\n{contribution}\n"
     )
     messages = [
@@ -104,6 +104,30 @@ def _merge_page(
     ]
     updated = chat(config, messages)
     target.write_text(updated.rstrip() + "\n", encoding="utf-8")
+
+
+def _new_page(
+    target: Path,
+    *,
+    page_title: str,
+    contribution: str,
+    source_filename: str,
+    page_type: str,
+) -> None:
+    now = datetime.now().strftime("%Y-%m-%d")
+    body = (
+        "---\n"
+        f"type: {page_type}\n"
+        f"created: {now}\n"
+        f"updated: {now}\n"
+        f"sources:\n  - {source_filename}\n"
+        "---\n\n"
+        f"# {page_title}\n\n"
+        f"{contribution}\n\n"
+        "## Sources\n\n"
+        f"- [[{source_filename}]]\n"
+    )
+    target.write_text(body, encoding="utf-8")
 
 
 def _write_index(
@@ -328,13 +352,22 @@ def ingest_note(
             filename = f"{prefix}/{slug}.md"
             target = wiki / filename
             try:
-                _merge_page(
-                    target,
-                    page_title=item.get("name", slug),
-                    contribution=item.get("contribution", ""),
-                    source_filename=source_filename,
-                    config=config,
-                )
+                if target.exists():
+                    _merge_page(
+                        target,
+                        page_title=item.get("name", slug),
+                        contribution=item.get("contribution", ""),
+                        source_filename=source_filename,
+                        config=config,
+                    )
+                else:
+                    _new_page(
+                        target,
+                        page_title=item.get("name", slug),
+                        contribution=item.get("contribution", ""),
+                        source_filename=source_filename,
+                        page_type=prefix[:-1],
+                    )
             except Exception:
                 _logging.exception("merge failed for %s", filename)
                 continue
@@ -429,8 +462,7 @@ def migrate_wiki_to_subdirs(wiki_dir: Path | None = None) -> int:
                 text = text.replace(
                     f"]({prefix}", f"]({sub}"
                 )
-            # Sources: bare "summary_" and "sources/summary_" → "sources/summary_"
-            text = text.replace("](sources/summary_", "](sources/summary_")
+            # Sources: bare "summary_" → "sources/summary_"
             text = text.replace("](summary_", "](sources/summary_")
             idx.write_text(text, encoding="utf-8")
     return moved

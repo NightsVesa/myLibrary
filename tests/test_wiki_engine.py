@@ -143,6 +143,7 @@ def test_parse_extract_invalid_returns_empty():
 
 def test_merge_page_creates_new(wiki_dir, config):
     target = wiki_dir / "entities" / "openai.md"
+    target.write_text("", encoding="utf-8")
     with patch(
         "llm.wiki_engine.chat",
         return_value="# OpenAI\n\nA US AI lab.\n\n## Sources\n- src.md\n",
@@ -318,7 +319,7 @@ def test_ingest_note_writes_summary_entities_concepts(wiki_dir, notes_dir, confi
     assert "ingest" in log
     assert "ai" in log
 
-    assert len(calls) == 3
+    assert len(calls) == 1  # extract only; new pages use _new_page (no LLM)
 
 
 def test_ingest_note_summary_lists_related_pages(wiki_dir, notes_dir, config):
@@ -387,6 +388,9 @@ def test_ingest_note_canonicalizes_slug(wiki_dir, notes_dir, config):
 def test_ingest_note_merge_failure_is_isolated(wiki_dir, notes_dir, config):
     note = notes_dir / "ai.md"
     note.write_text("content", encoding="utf-8")
+    # Pre-create entity files so _merge_page (not _new_page) is called.
+    (wiki_dir / "entities" / "e1.md").write_text("# E1\n\nold\n", encoding="utf-8")
+    (wiki_dir / "entities" / "e2.md").write_text("# E2\n\nold\n", encoding="utf-8")
 
     extract_json = (
         '{"summary": "S.",'
@@ -409,10 +413,13 @@ def test_ingest_note_merge_failure_is_isolated(wiki_dir, notes_dir, config):
         result = ingest_note(note, config, wiki_dir=wiki_dir)
 
     assert result.exists()
-    assert not (wiki_dir / "entities" / "e1.md").exists()
-    assert (wiki_dir / "entities" / "e2.md").exists()
+    # E1 merge failed — file still has old content (merge exception caught).
+    assert "old" in (wiki_dir / "entities" / "e1.md").read_text(encoding="utf-8")
+    # E2 merge succeeded.
+    assert "ok" in (wiki_dir / "entities" / "e2.md").read_text(encoding="utf-8")
     idx = _scan_index(wiki_dir)
     assert "entities/e2.md" in idx["Entities"]
+    # E1 should NOT be in the index (merge failed → not registered).
     assert "entities/e1.md" not in idx["Entities"]
 
 

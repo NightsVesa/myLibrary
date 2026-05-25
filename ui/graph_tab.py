@@ -38,6 +38,7 @@ NODE_EDGE_HIGH = {
 LINK_COLOR = "#d0d8e8"
 FONT_NODE = ("Microsoft YaHei", 7)
 FONT_TITLE = ("Microsoft YaHei", 10, "bold")
+NODE_CLICK_THRESHOLD = 5  # px — distinguishes click from drag
 FORCE_ITERS = 60
 DAMPING = 0.85
 
@@ -161,12 +162,14 @@ class _GraphWindow:
         self._pan = {"x": 0.0, "y": 0.0}
         self._pan_start = (0.0, 0.0)
         self._drag_nid: str | None = None
+        self._node_press_pos: tuple[int, int] = (0, 0)
         self._mode: str | None = None   # None | "drag" | "resize"
         self._resize_edge = ""          # "right", "bottom", or "rightbottom"
         self._drag_origin = (0, 0)
         self._scale = 1.0
         self._maximized = False
         self._restore_geo = ""
+        self._in_resize = False
 
         self._build_window()
         self._build_canvas()
@@ -239,6 +242,7 @@ class _GraphWindow:
         nid = self._hit_node(e.x, e.y)
         if nid is not None:
             self._drag_nid = nid
+            self._node_press_pos = (e.x, e.y)
             self._mode = "node_drag"
             return
         # Background pan
@@ -279,7 +283,10 @@ class _GraphWindow:
 
     def _on_release(self, e) -> None:
         if self._mode == "node_drag" and self._drag_nid is not None:
-            self._open_page(self._drag_nid)
+            dx = e.x - self._node_press_pos[0]
+            dy = e.y - self._node_press_pos[1]
+            if dx * dx + dy * dy < NODE_CLICK_THRESHOLD * NODE_CLICK_THRESHOLD:
+                self._open_page(self._drag_nid)
         self._mode = None
         self._drag_nid = None
         self._resize_edge = ""
@@ -327,15 +334,19 @@ class _GraphWindow:
     def _on_resize(self, e) -> None:
         if e.widget is not self.win:
             return
-        self.w, self.h = e.width, e.height
-        self._canvas.place(width=self.w, height=self.h)
-        self._canvas.config(width=self.w, height=self.h)
-        # Re-draw immediately for smooth resize visuals.
-        self._draw()
-        # Re-layout after the user stops resizing (debounce 400 ms).
-        if hasattr(self, '_relayout_after'):
-            self.win.after_cancel(self._relayout_after)
-        self._relayout_after = self.win.after(400, self._relayout)
+        if self._in_resize:
+            return
+        self._in_resize = True
+        try:
+            self.w, self.h = e.width, e.height
+            self._canvas.place(width=self.w, height=self.h)
+            self._canvas.config(width=self.w, height=self.h)
+            self._draw()
+            if hasattr(self, '_relayout_after'):
+                self.win.after_cancel(self._relayout_after)
+            self._relayout_after = self.win.after(400, self._relayout)
+        finally:
+            self._in_resize = False
 
     def _relayout(self) -> None:
         """Re-run force layout for current window size."""
@@ -594,7 +605,9 @@ class _GraphWindow:
 
     def _open_page(self, nid: str) -> None:
         import config
-        path = config.WIKI_DIR / nid
+        path = (config.WIKI_DIR / nid).resolve()
+        if not path.is_relative_to(config.WIKI_DIR.resolve()):
+            return
         if not path.exists():
             return
         if self._main:

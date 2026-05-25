@@ -1,5 +1,6 @@
 import logging as _err_log
 import math
+import queue
 import re
 import threading
 import time
@@ -858,6 +859,7 @@ class MainWindow:
         self._set_state("eat")
 
         t0 = time.monotonic()
+        result_q: queue.Queue[tuple[int, int]] = queue.Queue()
 
         def _worker():
             ok, err = 0, 0
@@ -876,13 +878,21 @@ class MainWindow:
                 except Exception:
                     _err_log.exception("ingest failed for %s", p)
                     err += 1
-            # Ensure minimum animation duration.
+            result_q.put((ok, err))
+
+        def _poll():
+            try:
+                ok, err = result_q.get_nowait()
+            except queue.Empty:
+                self.root.after(100, _poll)
+                return
             elapsed = int((time.monotonic() - t0) * 1000)
             delay = max(0, self.MIN_EAT_MS - elapsed)
             self.root.after(delay, lambda: self._end_eat_animated(ok, err))
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
+        self.root.after(100, _poll)
 
     def _end_eat_animated(self, ok: int, err: int) -> None:
         self._set_state("idle")
