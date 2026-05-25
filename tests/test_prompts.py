@@ -1,5 +1,6 @@
 from llm.prompts import (
     INGEST_EXTRACT_SYSTEM,
+    ingest_extract_system,
     MERGE_PAGE_SYSTEM,
     QUERY_SYSTEM,
     LOG_ENTRY_TEMPLATE,
@@ -30,3 +31,17 @@ def test_log_entry_template_has_placeholders():
     )
     assert "2026-05-22" in sample
     assert "ingest" in sample
+
+
+def test_extract_prompt_function_respects_max_items():
+    prompt_10 = ingest_extract_system(max_items=10)
+    assert "AT MOST 10" in prompt_10
+    prompt_20 = ingest_extract_system(max_items=20)
+    assert "AT MOST 20" in prompt_20
+
+
+def test_merge_prompt_says_no_sources_related():
+    lower = MERGE_PAGE_SYSTEM.lower()
+    assert "do not emit" in lower
+    assert "## sources" in lower
+    assert "## related" in lower

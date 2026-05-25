@@ -14,10 +14,15 @@ from llm.wiki_engine import (
     ExtractResult,
     IndexEntry,
     _merge_page,
+    _new_page,
     _write_index,
     _append_log,
     _ensure_subdirs,
     _collect_existing_slugs,
+    _strip_managed_sections,
+    _build_related_section,
+    _build_sources_section,
+    _collect_sources_from_page,
     migrate_wiki_to_subdirs,
 )
 
@@ -565,3 +570,142 @@ def test_query_wiki_empty_wiki(wiki_dir, config):
     result = list(query_wiki("anything?", config, wiki_dir=wiki_dir))
     assert len(result) == 1
     assert "empty" in result[0].lower() or "空" in result[0]
+
+
+# --- _strip_managed_sections -----------------------------------------------
+
+def test_strip_managed_sections_removes_frontmatter_and_sources():
+    text = (
+        "---\ntype: entity\ncreated: 2026-01-01\n---\n\n"
+        "# OpenAI\n\nA lab.\n\n## Sources\n\n- src.md\n"
+    )
+    result = _strip_managed_sections(text)
+    assert "---" not in result
+    assert "## Sources" not in result
+    assert "# OpenAI" in result
+    assert "A lab." in result
+
+
+def test_strip_managed_sections_chinese_sources():
+    text = "# 数据集\n\n描述。\n\n## 来源\n\n- src.md\n"
+    result = _strip_managed_sections(text)
+    assert "## 来源" not in result
+    assert "描述" in result
+
+
+def test_strip_managed_sections_related():
+    text = "# Page\n\nContent.\n\n## Related\n\n- [A](a.md)\n"
+    result = _strip_managed_sections(text)
+    assert "## Related" not in result
+    assert "Content." in result
+
+
+def test_strip_managed_sections_no_sections():
+    text = "# Title\n\nJust prose."
+    assert _strip_managed_sections(text) == text
+
+
+# --- _build_related_section / _build_sources_section -----------------------
+
+def test_build_related_section():
+    related = [("ML", "concepts/ml.md"), ("DL", "concepts/dl.md")]
+    section = _build_related_section(related)
+    assert "## Related" in section
+    assert "[ML](concepts/ml.md)" in section
+    assert "[DL](concepts/dl.md)" in section
+
+
+def test_build_related_section_empty():
+    assert _build_related_section([]) == ""
+
+
+def test_build_sources_section_dedup():
+    existing = ["- [[sources/summary_a.md]]"]
+    section = _build_sources_section(existing, "sources/summary_a.md")
+    assert section.count("summary_a.md") == 1
+
+
+def test_build_sources_section_appends_new():
+    existing = ["- [[sources/summary_a.md]]"]
+    section = _build_sources_section(existing, "sources/summary_b.md")
+    assert "summary_a.md" in section
+    assert "summary_b.md" in section
+
+
+# --- _merge_page deterministic sections -----------------------------------
+
+def test_merge_page_strips_sections_before_llm(wiki_dir, config):
+    target = wiki_dir / "entities" / "test.md"
+    target.write_text(
+        "# Test\n\nOld prose.\n\n## Sources\n\n- [[old_src.md]]\n\n## Related\n\n- [A](a.md)\n",
+        encoding="utf-8",
+    )
+    seen = {}
+
+    def fake_chat(_cfg, messages):
+        seen["user"] = messages[1].content
+        return "# Test\n\nOld prose. New prose."
+
+    with patch("llm.wiki_engine.chat", side_effect=fake_chat):
+        _merge_page(target, page_title="Test", contribution="New.",
+                     source_filename="sources/summary_x.md", config=config)
+    assert "## Sources" not in seen["user"]
+    assert "## Related" not in seen["user"]
+    body = target.read_text(encoding="utf-8")
+    assert "## Sources" in body
+    assert "summary_x.md" in body
+
+
+def test_merge_page_with_related(wiki_dir, config):
+    target = wiki_dir / "entities" / "test.md"
+    target.write_text("# Test\n\nExisting.\n", encoding="utf-8")
+
+    with patch("llm.wiki_engine.chat", return_value="# Test\n\nMerged."):
+        _merge_page(
+            target, page_title="Test", contribution="New.",
+            source_filename="sources/summary_x.md", config=config,
+            related=[("ML", "concepts/ml.md")],
+        )
+    body = target.read_text(encoding="utf-8")
+    assert "## Related" in body
+    assert "[ML](concepts/ml.md)" in body
+
+
+# --- _new_page with related -----------------------------------------------
+
+def test_new_page_with_related(wiki_dir):
+    target = wiki_dir / "entities" / "test.md"
+    _new_page(
+        target, page_title="Test", contribution="Content.",
+        source_filename="sources/summary_x.md", page_type="entity",
+        related=[("ML", "concepts/ml.md"), ("DL", "concepts/dl.md")],
+    )
+    body = target.read_text(encoding="utf-8")
+    assert "## Related" in body
+    assert "[ML](concepts/ml.md)" in body
+    assert "[DL](concepts/dl.md)" in body
+
+
+# --- migrate fixes old-format links in content ----------------------------
+
+def test_migrate_fixes_old_format_links_in_content(tmp_path):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    (wiki / "sources").mkdir()
+    (wiki / "entities").mkdir()
+    (wiki / "concepts").mkdir()
+    (wiki / "sources" / "summary_a.md").write_text(
+        "# A\n\n## Related\n\n- [Foo](entity_foo.md)\n- [Bar](concept_bar.md)\n",
+        encoding="utf-8",
+    )
+    (wiki / "entities" / "foo.md").write_text("# Foo", encoding="utf-8")
+    (wiki / "concepts" / "bar.md").write_text("# Bar", encoding="utf-8")
+    (wiki / "index.md").write_text("# Index\n", encoding="utf-8")
+
+    migrate_wiki_to_subdirs(wiki)
+
+    body = (wiki / "sources" / "summary_a.md").read_text(encoding="utf-8")
+    assert "entities/foo.md" in body
+    assert "entity_foo.md" not in body
+    assert "concepts/bar.md" in body
+    assert "concept_bar.md" not in body

@@ -1,5 +1,28 @@
 # Multi-Page Wiki Ingest Implementation Plan
 
+> **Status (2026-05-25): IMPLEMENTED.** This plan has been fully implemented and
+> the architecture has evolved beyond what is described here. The current state
+> is documented in `CLAUDE.md`. This document is preserved for historical
+> reference but is no longer authoritative.
+>
+> **Post-implementation divergences:**
+> - **Subdirectory layout** replaced flat-file layout: `sources/`, `entities/`,
+>   `concepts/` instead of `summary_*.md`, `entity_*.md`, `concept_*.md`.
+>   A `migrate_wiki_to_subdirs()` helper handles the transition.
+> - **`_new_page`** added to create brand-new entity/concept pages without an
+>   LLM call (only existing pages go through `_merge_page`).
+> - **`_canonical_slug`** / **`_collect_existing_slugs`** added for slug
+>   deduplication against on-disk files.
+> - **`update_targets`** field removed from `ExtractResult` (unnecessary — the
+>   orchestrator derives targets from entities/concepts lists directly).
+> - **Deterministic `## Sources` / `## Related` sections** — managed in Python
+>   code, not by the LLM, to prevent localization drift (`## 来源` vs `## Sources`).
+> - **Bidirectional Related sections** — entity/concept pages now include
+>   `## Related` linking to peers and source pages.
+> - **LLM retry** — `chat()` retries transient 429/5xx with exponential backoff.
+> - **Configurable knobs** — `WIKI_RETRIEVAL_TOP_N`, `WIKI_INDEX_SUMMARY_LEN`,
+>   `WIKI_MAX_EXTRACT_ITEMS` in `config.py` (env-driven).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the current single-summary ingest with a two-stage LLM flow that produces a source summary plus cross-page updates to entity and concept pages, and a categorized `index.md`.

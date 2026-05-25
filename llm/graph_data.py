@@ -49,13 +49,11 @@ def parse_wiki_graph(wiki_dir: Path) -> Graph:
             except ValueError:
                 continue
 
-    # ── Extract edges from each source page's ## Related ───────────────
+    # ── Extract edges from each page's ## Related ──────────────────────
     edges: list[Edge] = []
     related_pat = re.compile(r"^- \[.+?\]\((.+?)\)$")
 
     for nid, (title, kind) in node_map.items():
-        if kind != "source":
-            continue
         page = wiki_dir / nid
         if not page.exists():
             continue

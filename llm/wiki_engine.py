@@ -10,7 +10,7 @@ import threading
 import config as app_config
 from llm.client import LLMConfig, Message, chat, chat_stream
 from llm.prompts import (
-    INGEST_EXTRACT_SYSTEM,
+    ingest_extract_system,
     MERGE_PAGE_SYSTEM,
     QUERY_SYSTEM,
     LOG_ENTRY_TEMPLATE,
@@ -83,6 +83,59 @@ def _parse_extract(raw: str) -> ExtractResult:
     )
 
 
+_MANAGED_HEADINGS = frozenset({"## Sources", "## 来源", "## Related"})
+
+
+def _strip_managed_sections(text: str) -> str:
+    """Remove YAML frontmatter and trailing ## Sources / ## 来源 / ## Related."""
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        for i, line in enumerate(lines[1:], 1):
+            if line.strip() == "---":
+                lines = lines[i + 1:]
+                break
+    cut_idx = len(lines)
+    for i, line in enumerate(lines):
+        if line.strip() in _MANAGED_HEADINGS:
+            cut_idx = i
+            break
+    return "\n".join(lines[:cut_idx]).strip()
+
+
+def _collect_sources_from_page(target: Path) -> list[str]:
+    """Read existing source entries from a page's ## Sources / ## 来源."""
+    if not target.exists():
+        return []
+    entries: list[str] = []
+    in_sources = False
+    for line in target.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped in ("## Sources", "## 来源"):
+            in_sources = True
+            continue
+        if in_sources and stripped.startswith("## "):
+            break
+        if in_sources and stripped.startswith("- "):
+            entries.append(stripped)
+    return entries
+
+
+def _build_sources_section(existing_entries: list[str], new_source: str) -> str:
+    new_entry = f"- [[{new_source}]]"
+    if new_entry not in existing_entries:
+        existing_entries = [*existing_entries, new_entry]
+    return "## Sources\n\n" + "\n".join(existing_entries) + "\n"
+
+
+def _build_related_section(related: list[tuple[str, str]]) -> str:
+    if not related:
+        return ""
+    lines = ["## Related\n"]
+    for name, filename in related:
+        lines.append(f"- [{name}]({filename})")
+    return "\n".join(lines) + "\n"
+
+
 def _merge_page(
     target: Path,
     *,
@@ -90,20 +143,28 @@ def _merge_page(
     contribution: str,
     source_filename: str,
     config: LLMConfig,
+    related: list[tuple[str, str]] | None = None,
 ) -> None:
-    existing = target.read_text(encoding="utf-8")
+    existing_raw = target.read_text(encoding="utf-8")
+    existing_sources = _collect_sources_from_page(target)
+    prose_only = _strip_managed_sections(existing_raw)
     user_content = (
         f"Page title: {page_title}\n"
         f"New source: {source_filename}\n\n"
-        f"=== Existing page content ===\n{existing}\n\n"
+        f"=== Existing page content ===\n{prose_only}\n\n"
         f"=== New contribution from this source ===\n{contribution}\n"
     )
     messages = [
         Message(role="system", content=MERGE_PAGE_SYSTEM),
         Message(role="user", content=user_content),
     ]
-    updated = chat(config, messages)
-    target.write_text(updated.rstrip() + "\n", encoding="utf-8")
+    updated_prose = _strip_managed_sections(chat(config, messages))
+    sources_section = _build_sources_section(existing_sources, source_filename)
+    related_section = _build_related_section(related or [])
+    full = updated_prose.rstrip() + "\n\n" + sources_section
+    if related_section:
+        full += "\n" + related_section
+    target.write_text(full, encoding="utf-8")
 
 
 def _new_page(
@@ -113,8 +174,10 @@ def _new_page(
     contribution: str,
     source_filename: str,
     page_type: str,
+    related: list[tuple[str, str]] | None = None,
 ) -> None:
     now = datetime.now().strftime("%Y-%m-%d")
+    related_section = _build_related_section(related or [])
     body = (
         "---\n"
         f"type: {page_type}\n"
@@ -127,6 +190,8 @@ def _new_page(
         "## Sources\n\n"
         f"- [[{source_filename}]]\n"
     )
+    if related_section:
+        body += "\n" + related_section
     target.write_text(body, encoding="utf-8")
 
 
@@ -290,7 +355,7 @@ def ingest_note(
         user_parts.append(slug_list)
 
     extract_messages = [
-        Message(role="system", content=INGEST_EXTRACT_SYSTEM),
+        Message(role="system", content=ingest_extract_system(app_config.WIKI_MAX_EXTRACT_ITEMS)),
         Message(role="user", content="\n\n".join(user_parts)),
     ]
     extracted = _parse_extract(chat(config, extract_messages))
@@ -305,83 +370,82 @@ def ingest_note(
     def _resolve_slug(item: dict, prefix: str) -> str:
         existing = entity_slugs_on_disk if prefix == "entities" else concept_slugs_on_disk
         raw = _slugify(item.get("slug") or item.get("name", ""))
-        return _canonical_slug(raw, existing)
+        slug = _canonical_slug(raw, existing)
+        if slug:
+            existing.add(slug)
+        return slug
 
-    related_lines: list[str] = []
+    # Pre-resolve all items so each page knows its peers.
+    resolved: list[tuple[dict, str, str]] = []  # (item, slug, filename)
     for item in extracted.entities:
         slug = _resolve_slug(item, "entities")
         if slug:
-            related_lines.append(
-                f"- [{item.get('name', slug)}](entities/{slug}.md)"
-            )
+            resolved.append((item, slug, f"entities/{slug}.md"))
     for item in extracted.concepts:
         slug = _resolve_slug(item, "concepts")
         if slug:
-            related_lines.append(
-                f"- [{item.get('name', slug)}](concepts/{slug}.md)"
-            )
-    related_section = (
-        "\n\n## Related\n\n" + "\n".join(related_lines) + "\n"
-        if related_lines else ""
-    )
+            resolved.append((item, slug, f"concepts/{slug}.md"))
+
+    # Source page's ## Related lists all entities + concepts.
+    source_related = [
+        (it.get("name", sl), fn) for it, sl, fn in resolved
+    ]
+    related_section = _build_related_section(source_related)
+    if related_section:
+        related_section = "\n" + related_section
 
     source_page.write_text(
         frontmatter + f"# {title}\n\n{extracted.summary}\n" + related_section,
         encoding="utf-8",
     )
 
-    sources, entities, concepts = _read_index_entries(wiki)
+    sources, entities_idx, concepts_idx = _read_index_entries(wiki)
     sources = [e for e in sources if e.filename != source_filename]
     sources.append(IndexEntry(
         title=title,
         filename=source_filename,
-        summary=(extracted.summary.split("\n")[0][:80] or "(no summary)"),
+        summary=(extracted.summary.split("\n")[0][:app_config.WIKI_INDEX_SUMMARY_LEN] or "(no summary)"),
     ))
 
-    def _merge_and_register(
-        items: list[dict], prefix: str, registry: list[IndexEntry],
-    ) -> None:
-        existing_slugs = entity_slugs_on_disk if prefix == "entities" else concept_slugs_on_disk
-        for item in items:
-            raw = _slugify(item.get("slug") or item.get("name", ""))
-            slug = _canonical_slug(raw, existing_slugs) if raw else ""
-            if not slug:
-                continue
-            # Keep slug set current so later items in the same batch dedupe too.
-            existing_slugs.add(slug)
-            filename = f"{prefix}/{slug}.md"
-            target = wiki / filename
-            try:
-                if target.exists():
-                    _merge_page(
-                        target,
-                        page_title=item.get("name", slug),
-                        contribution=item.get("contribution", ""),
-                        source_filename=source_filename,
-                        config=config,
-                    )
-                else:
-                    _new_page(
-                        target,
-                        page_title=item.get("name", slug),
-                        contribution=item.get("contribution", ""),
-                        source_filename=source_filename,
-                        page_type=prefix[:-1],
-                    )
-            except Exception:
-                _logging.exception("merge failed for %s", filename)
-                continue
-            registry[:] = [e for e in registry if e.filename != filename]
-            registry.append(IndexEntry(
-                title=item.get("name", slug),
-                filename=filename,
-                summary=(item.get("contribution", "").split("\n")[0][:80]),
-            ))
+    for item, slug, filename in resolved:
+        prefix = filename.split("/")[0]
+        registry = entities_idx if prefix == "entities" else concepts_idx
+        # Related: source page + peer items from the same batch.
+        page_related: list[tuple[str, str]] = [(title, source_filename)]
+        for peer_item, peer_slug, peer_fn in resolved:
+            if peer_fn != filename:
+                page_related.append((peer_item.get("name", peer_slug), peer_fn))
+        target = wiki / filename
+        try:
+            if target.exists():
+                _merge_page(
+                    target,
+                    page_title=item.get("name", slug),
+                    contribution=item.get("contribution", ""),
+                    source_filename=source_filename,
+                    config=config,
+                    related=page_related,
+                )
+            else:
+                _new_page(
+                    target,
+                    page_title=item.get("name", slug),
+                    contribution=item.get("contribution", ""),
+                    source_filename=source_filename,
+                    page_type=prefix.rstrip("s"),
+                    related=page_related,
+                )
+        except Exception:
+            _logging.exception("merge failed for %s", filename)
+            continue
+        registry[:] = [e for e in registry if e.filename != filename]
+        registry.append(IndexEntry(
+            title=item.get("name", slug),
+            filename=filename,
+            summary=(item.get("contribution", "").split("\n")[0][:app_config.WIKI_INDEX_SUMMARY_LEN]),
+        ))
 
-    _merge_and_register(extracted.entities, "entities", entities)
-    _merge_and_register(extracted.concepts, "concepts", concepts)
-
-    _write_index(wiki, sources=sources, entities=entities, concepts=concepts)
+    _write_index(wiki, sources=sources, entities=entities_idx, concepts=concepts_idx)
     _append_log(
         wiki, "ingest", title,
         f"Created {source_filename}; touched {len(extracted.entities)} entities, "
@@ -465,6 +529,26 @@ def migrate_wiki_to_subdirs(wiki_dir: Path | None = None) -> int:
             # Sources: bare "summary_" → "sources/summary_"
             text = text.replace("](summary_", "](sources/summary_")
             idx.write_text(text, encoding="utf-8")
+
+    # Pass 3: fix old-format links inside page content.
+    for sub in ("sources", "entities", "concepts"):
+        sd = wiki / sub
+        if not sd.exists():
+            continue
+        for f in sd.iterdir():
+            if not f.is_file() or f.suffix != ".md":
+                continue
+            text = f.read_text(encoding="utf-8")
+            updated = text
+            for old_prefix, new_prefix in (
+                ("entity_", "entities/"),
+                ("concept_", "concepts/"),
+            ):
+                updated = updated.replace(f"]({old_prefix}", f"]({new_prefix}")
+            if updated != text:
+                f.write_text(updated, encoding="utf-8")
+                moved += 1
+
     return moved
 
 
@@ -485,12 +569,14 @@ def _pick_relevant_pages(
     question: str,
     *,
     wiki_dir: Path | None = None,
-    top_n: int = 5,
+    top_n: int | None = None,
 ) -> list[Path]:
     wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
     idx = wiki / "index.md"
     if not idx.exists():
         return []
+
+    effective_n = top_n if top_n is not None else app_config.WIKI_RETRIEVAL_TOP_N
 
     q_tokens = _tokenize(question)
     if not q_tokens:
@@ -511,7 +597,7 @@ def _pick_relevant_pages(
             scored.append((hits, md))
 
     scored.sort(key=lambda t: t[0], reverse=True)
-    return [path for _, path in scored[:top_n]]
+    return [path for _, path in scored[:effective_n]]
 
 
 def query_wiki(

@@ -1,4 +1,5 @@
-INGEST_EXTRACT_SYSTEM = """\
+def ingest_extract_system(max_items: int = 15) -> str:
+    return f"""\
 You are a wiki maintainer for a personal knowledge base.
 
 You will receive (a) a source note and (b) the current wiki index catalog \
@@ -8,17 +9,17 @@ source.
 Respond with EXACTLY one JSON object and nothing else. Do not wrap it in \
 markdown fences. The object must have these keys:
 
-{
+{{
   "summary": "<100-300 word markdown summary of the source>",
   "entities": [
-    {"name": "<display name>", "slug": "<kebab-case-slug>",
-     "contribution": "<1-3 sentences explaining what THIS source adds about this entity>"}
+    {{"name": "<display name>", "slug": "<kebab-case-slug>",
+     "contribution": "<1-3 sentences explaining what THIS source adds about this entity>"}}
   ],
   "concepts": [
-    {"name": "<display name>", "slug": "<kebab-case-slug>",
-     "contribution": "<1-3 sentences explaining what THIS source adds about this concept>"}
+    {{"name": "<display name>", "slug": "<kebab-case-slug>",
+     "contribution": "<1-3 sentences explaining what THIS source adds about this concept>"}}
   ]
-}
+}}
 
 Rules:
 - Entities are concrete (people, tools, places, products). Concepts are abstract \
@@ -31,19 +32,21 @@ punctuation or case). Only invent a new slug when the entity/concept is genuinel
 new.
 - Write summary and contributions in the same language as the source.
 - Be factual. Do not invent information.
-- Keep entities + concepts to AT MOST 15 combined.
+- Keep entities + concepts to AT MOST {max_items} combined.
 """
+
+
+INGEST_EXTRACT_SYSTEM = ingest_extract_system()
 
 MERGE_PAGE_SYSTEM = """\
 You are a wiki maintainer updating a single wiki page.
 
 You will receive:
-- The page's existing markdown content (may be empty if this is a new page).
+- The page's existing prose content (may be empty if this is a new page).
 - The new contribution from a freshly ingested source, including the source's title.
 
-Your job: return the FULL updated markdown body for the page. Integrate the new \
-contribution into the existing content. Add a "Sources" section at the bottom \
-listing every source that has contributed, including the new one (avoid duplicates).
+Your job: return the FULL updated prose body for the page. Integrate the new \
+contribution into the existing content.
 
 Rules:
 - Preserve facts already on the page. Only add or refine — never delete unless \
@@ -51,7 +54,9 @@ contradicted.
 - Keep the page focused on its subject. No meta-commentary.
 - Write in the same language as the existing page (or the new contribution if \
 the page is empty).
-- Output ONLY the markdown body. No code fences, no JSON, no explanations.
+- Output ONLY the prose content. Do NOT emit ## Sources, ## Related, ## 来源, \
+or YAML frontmatter sections — those are managed automatically.
+- No code fences, no JSON, no explanations.
 """
 
 QUERY_SYSTEM = """\

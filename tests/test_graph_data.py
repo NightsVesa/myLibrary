@@ -93,3 +93,18 @@ def test_parse_wiki_graph_empty_wiki(tmp_path):
     g = parse_wiki_graph(w)
     assert len(g.nodes) == 0
     assert len(g.edges) == 0
+
+
+def test_parse_wiki_graph_entity_related_edges(mini_wiki):
+    """Entity pages with ## Related produce edges in the graph."""
+    (mini_wiki / "entities" / "openai.md").write_text(
+        "# OpenAI\n\nAI lab.\n\n## Related\n\n"
+        "- [ML](concepts/ml.md)\n"
+        "- [DeepSeek](entities/deepseek.md)\n",
+        encoding="utf-8",
+    )
+    g = parse_wiki_graph(mini_wiki)
+    edge_keys = {(e.source, e.target) for e in g.edges}
+    assert ("sources/summary_a.md", "entities/openai.md") in edge_keys
+    assert ("entities/openai.md", "concepts/ml.md") in edge_keys
+    assert ("entities/openai.md", "entities/deepseek.md") in edge_keys
