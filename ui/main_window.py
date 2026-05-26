@@ -857,45 +857,196 @@ class MainWindow:
     MIN_EAT_MS = 2500  # keep eat animation for at least 2.5 s
 
     def _ingest_with_animation(self, paths: list[Path]) -> None:
-        """Start eat animation, ingest every path in background,
-        then pop a cartoon toast with the result."""
+        """Start eat animation, open discussion panel, then ingest."""
+        if not paths:
+            return
         self._set_state("eat")
+        self._open_ingest_chat(paths)
 
-        t0 = time.monotonic()
-        result_q: queue.Queue[tuple[int, int]] = queue.Queue()
+    def _open_ingest_chat(self, paths: list[Path]) -> None:
+        """Open a chat-style discussion panel for interactive ingest."""
+        from llm.client import LLMConfig
+        from llm.wiki_engine import discuss_and_ingest
+        import config as _cfg
 
+        llm_cfg = LLMConfig(
+            api_base=_cfg.LLM_API_BASE,
+            api_key=_cfg.LLM_API_KEY,
+            model=_cfg.LLM_MODEL,
+        )
+        if not llm_cfg.api_key:
+            # No LLM — fall back to silent background ingest.
+            from llm.wiki_engine import background_ingest
+            for p in paths:
+                background_ingest(p)
+            self._set_state("idle")
+            Messagebox.show_info(f"已开始处理 {len(paths)} 个文件", parent=self.root)
+            return
+
+        chat_q: queue.Queue[str] = queue.Queue()
+        user_q: queue.Queue[str] = queue.Queue()
+        path_iter = iter(paths)
+        self._current_note: Path | None = next(path_iter)
+        self._pending_paths = list(path_iter)
+
+        # ── Chat panel (Toplevel) ───────────────────────────────────────
+        pw, ph = 480, 520
+        panel = tk.Toplevel(self.root)
+        panel.overrideredirect(True)
+        panel.attributes("-topmost", True)
+        panel.config(bg=TRANSPARENT)
+        panel.wm_attributes("-transparentcolor", TRANSPARENT)
+        rx, ry = self.root.winfo_x(), self.root.winfo_y()
+        px = max(0, rx + self.window_w // 2 - pw // 2)
+        py = max(0, ry - ph - 16)
+        panel.geometry(f"{pw}x{ph}+{px}+{py}")
+
+        card = _shared_card_png(pw, ph, 20, "#ffffff", "#c0a8e0", "#c0a8e0", 6)
+        self._chat_bg = ImageTk.PhotoImage(card)
+
+        cv = tk.Canvas(panel, width=pw, height=ph,
+                       bg=TRANSPARENT, highlightthickness=0, borderwidth=0)
+        cv.pack()
+        cv.create_image(0, 0, image=self._chat_bg, anchor="nw")
+
+        # Title bar
+        cv.create_text(20, 22, text=f"讨论: {self._current_note.stem if self._current_note else '文件'}",
+                       anchor="w", fill=TEXT_MAIN, font=FONT_HEADING)
+        close_x = pw - 24
+        cv.create_text(close_x, 22, text="✕", fill=TEXT_LIGHT,
+                       font=("Microsoft YaHei", 12, "bold"))
+        cv.create_line(16, 44, pw - 16, 44, fill="#e8e0f0", width=1)
+
+        # Text widget for LLM streaming output
+        text_frame = tk.Frame(panel, bg="#ffffff")
+        text_frame.place(x=12, y=52, width=pw - 24, height=ph - 148)
+        text_widget = tk.Text(
+            text_frame, wrap="word", font=FONT_INPUT,
+            bg="#ffffff", fg=TEXT_MAIN, relief="flat",
+            state="disabled", padx=8, pady=6,
+            spacing1=2, spacing3=2,
+        )
+        sb = tk.Scrollbar(text_frame, command=text_widget.yview)
+        text_widget.config(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        text_widget.pack(side="left", fill="both", expand=True)
+
+        # Input area
+        input_frame = tk.Frame(panel, bg="#ffffff")
+        input_frame.place(x=12, y=ph - 88, width=pw - 24, height=32)
+        entry = tk.Entry(input_frame, font=FONT_INPUT, bg="#f8f6ff",
+                         fg=TEXT_MAIN, relief="flat", bd=0,
+                         highlightthickness=1, highlightbackground="#d4c8f0")
+        entry.pack(fill="both", expand=True, ipady=3)
+        entry.bind("<Return>", lambda _e: _send())
+
+        btn_frame = tk.Frame(panel, bg="#ffffff")
+        btn_frame.place(x=12, y=ph - 50, width=pw - 24, height=32)
+
+        send_btn = CartoonButton(btn_frame, "💬 发送", command=_send, kind="sky")
+        send_btn.pack(side="left", padx=(0, 6))
+        confirm_btn = CartoonButton(btn_frame, "✅ 确认提取", command=_confirm, kind="mint")
+        skip_btn = CartoonButton(btn_frame, "⏭ 跳过", command=_skip, kind="pink")
+        skip_btn.pack(side="right")
+        confirm_btn.pack(side="right", padx=6)
+        # Hide confirm until ready.
+        for b in (confirm_btn, skip_btn):
+            b.pack_forget()
+
+        ready = [False]
+
+        def _send():
+            text = entry.get().strip()
+            if not text:
+                return
+            _append_user(text)
+            entry.delete(0, "end")
+            user_q.put(text)
+
+        def _confirm():
+            user_q.put("__CONFIRM__")
+
+        def _skip():
+            user_q.put("__CANCEL__")
+
+        def _append_text(content: str) -> None:
+            text_widget.config(state="normal")
+            text_widget.insert("end", content)
+            text_widget.config(state="disabled")
+            text_widget.see("end")
+
+        def _append_user(content: str) -> None:
+            text_widget.config(state="normal")
+            text_widget.insert("end", f"\n👤 {content}\n\n", "user")
+            text_widget.config(state="disabled")
+            text_widget.see("end")
+
+        text_widget.tag_config("user", foreground="#7a5acc", font=FONT_BODY_BOLD)
+        text_widget.tag_config("status", foreground="#6b7c8f", font=FONT_HINT)
+
+        def _on_close():
+            user_q.put("__CANCEL__")
+            _dismiss()
+
+        # Close button click
+        cv.tag_bind(
+            cv.create_rectangle(close_x - 12, 10, close_x + 12, 34,
+                                fill="", outline=""),
+            "<Button-1>", lambda _e: _on_close(),
+        )
+
+        def _dismiss():
+            try:
+                panel.destroy()
+            except tk.TclError:
+                pass
+
+        # ── Worker thread ───────────────────────────────────────────────
         def _worker():
             ok, err = 0, 0
-            from llm.client import LLMConfig
-            from llm.wiki_engine import ingest_note as _ingest
-            import config as _cfg
-            llm_cfg = LLMConfig(
-                api_base=_cfg.LLM_API_BASE,
-                api_key=_cfg.LLM_API_KEY,
-                model=_cfg.LLM_MODEL,
-            )
-            for p in paths:
+            p = self._current_note
+            if p:
                 try:
-                    _ingest(p, llm_cfg)
-                    ok += 1
+                    result = discuss_and_ingest(
+                        p, llm_cfg,
+                        chat_q=chat_q, user_q=user_q,
+                    )
+                    if result:
+                        ok += 1
+                    else:
+                        err += 1
                 except Exception:
-                    _err_log.exception("ingest failed for %s", p)
+                    _err_log.exception("discuss+ingest failed for %s", p)
                     err += 1
-            result_q.put((ok, err))
+            self.root.after(0, lambda: self._finish_ingest(ok, err))
 
+        threading.Thread(target=_worker, daemon=True).start()
+
+        # ── Poll loop ───────────────────────────────────────────────────
         def _poll():
-            try:
-                ok, err = result_q.get_nowait()
-            except queue.Empty:
-                self.root.after(100, _poll)
-                return
-            elapsed = int((time.monotonic() - t0) * 1000)
-            delay = max(0, self.MIN_EAT_MS - elapsed)
-            self.root.after(delay, lambda: self._end_eat_animated(ok, err))
+            while True:
+                try:
+                    item = chat_q.get_nowait()
+                except queue.Empty:
+                    break
+                if item == "__READY__":
+                    ready[0] = True
+                    confirm_btn.pack(side="right", padx=6)
+                    skip_btn.pack(side="right")
+                elif item == "__DONE__":
+                    return  # let worker thread call _finish_ingest
+                elif item == "__ERROR__":
+                    _append_text("\n❌ 提取失败，关闭窗口重试\n")
+                    return
+                else:
+                    _append_text(item)
+            panel.after(50, _poll)
 
-        thread = threading.Thread(target=_worker, daemon=True)
-        thread.start()
-        self.root.after(100, _poll)
+        panel.after(50, _poll)
+
+    def _finish_ingest(self, ok: int, err: int) -> None:
+        self._set_state("idle")
+        self._show_ingest_toast(ok, err)
 
     def _end_eat_animated(self, ok: int, err: int) -> None:
         self._set_state("idle")

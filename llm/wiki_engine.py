@@ -4,12 +4,14 @@ from pathlib import Path
 from typing import Generator
 
 import logging as _logging
+import queue
 import re as _re
 import threading
 
 import config as app_config
 from llm.client import LLMConfig, Message, chat, chat_stream
 from llm.prompts import (
+    INGEST_DISCUSS_SYSTEM,
     ingest_extract_system,
     MERGE_PAGE_SYSTEM,
     QUERY_SYSTEM,
@@ -646,3 +648,74 @@ def background_ingest(note_path: Path) -> None:
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
+
+
+def _build_discuss_messages(source_text: str, history: list[dict[str, str]]) -> list[Message]:
+    msgs = [Message(role="system", content=INGEST_DISCUSS_SYSTEM)]
+    msgs.append(Message(
+        role="user",
+        content=f"=== Source document ===\n{source_text}\n\n"
+                f"Please read this source and discuss your findings with me.",
+    ))
+    for entry in history:
+        msgs.append(Message(role=entry["role"], content=entry["content"]))
+    return msgs
+
+
+def discuss_and_ingest(
+    note_path: Path,
+    config: LLMConfig,
+    *,
+    wiki_dir: Path | None = None,
+    chat_q: queue.Queue[str],
+    user_q: queue.Queue[str],
+) -> Path | None:
+    """Interactive ingest: discuss source with user, then extract + merge.
+
+    Runs on a worker thread.  Sends LLM text chunks to *chat_q* and blocks
+    on *user_q* for replies.  When discussion is done, runs the standard
+    ingest_note pipeline.
+    """
+    wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
+    source_text = _read_note_source(note_path)
+
+    history: list[dict[str, str]] = []
+
+    # ── Discussion loop ─────────────────────────────────────────────────
+    while True:
+        messages = _build_discuss_messages(source_text, history)
+        full_reply: list[str] = []
+        for chunk in chat_stream(config, messages):
+            full_reply.append(chunk)
+            chat_q.put(chunk)
+        reply_text = "".join(full_reply)
+        history.append({"role": "assistant", "content": reply_text})
+
+        if "[READY_TO_INGEST]" in reply_text:
+            chat_q.put("__READY__")
+            # Wait for user confirmation.
+            confirm = user_q.get()
+            if confirm == "__CANCEL__":
+                chat_q.put("__DONE__")
+                return None
+            break  # proceed to ingest phase
+
+        # Wait for user reply.
+        user_input = user_q.get()
+        if user_input == "__CANCEL__":
+            chat_q.put("__DONE__")
+            return None
+        history.append({"role": "user", "content": user_input})
+
+    # ── Ingest phase ────────────────────────────────────────────────────
+    chat_q.put("\n\n正在提取并写入 Wiki...\n")
+    try:
+        result = ingest_note(note_path, config, wiki_dir=wiki)
+        chat_q.put("\n✅ Wiki 更新完成\n")
+        chat_q.put("__DONE__")
+        return result
+    except Exception:
+        _logging.exception("ingest failed for %s", note_path)
+        chat_q.put("\n❌ 提取失败\n")
+        chat_q.put("__ERROR__")
+        return None

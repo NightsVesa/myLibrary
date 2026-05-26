@@ -1,4 +1,5 @@
 import pytest
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +24,8 @@ from llm.wiki_engine import (
     _build_related_section,
     _build_sources_section,
     _collect_sources_from_page,
+    _build_discuss_messages,
+    discuss_and_ingest,
     migrate_wiki_to_subdirs,
 )
 
@@ -709,3 +712,80 @@ def test_migrate_fixes_old_format_links_in_content(tmp_path):
     assert "entity_foo.md" not in body
     assert "concepts/bar.md" in body
     assert "concept_bar.md" not in body
+
+
+# --- discuss_and_ingest ---------------------------------------------------
+
+import queue
+
+
+def test_build_discuss_messages():
+    msgs = _build_discuss_messages("Hello world", [])
+    assert len(msgs) == 2  # system + user
+    assert msgs[0].role == "system"
+    assert "Hello world" in msgs[1].content
+
+
+def test_build_discuss_messages_with_history():
+    msgs = _build_discuss_messages(
+        "Source",
+        [{"role": "assistant", "content": "I see X and Y"},
+         {"role": "user", "content": "Focus on X"}],
+    )
+    assert len(msgs) == 4  # system + source + assistant + user
+    assert msgs[2].content == "I see X and Y"
+    assert msgs[3].content == "Focus on X"
+
+
+def test_discuss_and_ingest_ready_flow(notes_dir, config):
+    """Full discussion → confirm → ingest flow with mock LLM."""
+    note = notes_dir / "test.md"
+    note.write_text("# AI\n\nOpenAI builds GPT models.", encoding="utf-8")
+
+    chat_q = queue.Queue()
+    user_q = queue.Queue()
+
+    # LLM reply includes [READY_TO_INGEST] on first response.
+    def fake_stream(_cfg, messages):
+        yield "I found: OpenAI (entity), GPT (concept). "
+        yield "Key topic is AI development. [READY_TO_INGEST]"
+
+    extract_json = (
+        '{"summary": "Note about OpenAI.",'
+        ' "entities": [{"name":"OpenAI","slug":"openai","contribution":"Builds GPT."}],'
+        ' "concepts": []}'
+    )
+
+    with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
+         patch("llm.wiki_engine.chat", return_value=extract_json):
+        # Run in thread since discuss_and_ingest blocks on user_q.get().
+        def _run():
+            discuss_and_ingest(note, config, chat_q=chat_q, user_q=user_q)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+        # Read streamed chunks.
+        chunks = []
+        while True:
+            item = chat_q.get(timeout=2)
+            if item == "__READY__":
+                break
+            chunks.append(item)
+
+        assert any("OpenAI" in c for c in chunks)
+        assert any("READY_TO_INGEST" in c for c in chunks)
+
+        # User confirms.
+        user_q.put("__CONFIRM__")
+
+        # Consume status message, then result, then __DONE__.
+        items = []
+        while True:
+            item = chat_q.get(timeout=3)
+            items.append(item)
+            if item in ("__DONE__", "__ERROR__"):
+                break
+
+        assert "__DONE__" in items
+        t.join(timeout=2)

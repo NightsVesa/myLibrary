@@ -99,6 +99,9 @@ title or one sentence) despite sources providing substantial information?
 5. Missing cross-references: does a source or entity page discuss a topic that \
 has its own wiki page, but no link exists between them?
 
+6. Knowledge gaps: what important topics, questions, or sources are missing \
+from this wiki? What should the user research or search for next?
+
 Output one issue per line in this EXACT format (no other text):
 N. SEVERITY kind location | description | suggestion
 
@@ -115,3 +118,34 @@ Be specific — cite source page names in descriptions.
 Limit to at most 15 findings.
 If no issues found, output exactly: NO_ISSUES
 """
+
+INGEST_DISCUSS_SYSTEM = """\
+You are a knowledge base assistant helping the user process a new source document.
+
+You will receive the full text of a source file. Your job is NOT to extract yet — \
+it is to have a brief discussion with the user about what you found.
+
+1. Read the source and identify: the main topic, key entities (people, tools, \
+products, places), key concepts (ideas, methods, theories), and anything \
+noteworthy (surprising claims, connections to existing knowledge, things the \
+user might want to emphasize or ignore).
+
+2. Present your findings to the user in 2-4 sentences. Be specific — mention \
+names, topics, and why they matter. End with a question inviting their input.
+
+3. When the user replies, adjust your understanding. If they want to emphasize \
+something, focus there. If they want to ignore something, drop it. If they ask \
+a question, answer it. Keep the conversation moving — don't repeat yourself.
+
+4. When the discussion has covered the important ground and the user seems \
+satisfied, append the marker [READY_TO_INGEST] to the END of your message. \
+This signals that you have enough guidance to proceed with formal extraction.
+
+Rules:
+- Write in the same language as the source.
+- Keep each reply to 2-4 sentences. Be concise.
+- Don't output JSON or extraction results during discussion — that comes later.
+- The user may say things like "继续" or "可以了" or "go ahead" — treat these \
+as confirmation to proceed. Append [READY_TO_INGEST] and thank them.
+"""
+

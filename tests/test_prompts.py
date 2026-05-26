@@ -1,6 +1,8 @@
 from llm.prompts import (
+    INGEST_DISCUSS_SYSTEM,
     INGEST_EXTRACT_SYSTEM,
     ingest_extract_system,
+    LINT_SYSTEM,
     MERGE_PAGE_SYSTEM,
     QUERY_SYSTEM,
     LOG_ENTRY_TEMPLATE,
@@ -45,3 +47,11 @@ def test_merge_prompt_says_no_sources_related():
     assert "do not emit" in lower
     assert "## sources" in lower
     assert "## related" in lower
+
+
+def test_discuss_prompt_mentions_ready_marker():
+    assert "[READY_TO_INGEST]" in INGEST_DISCUSS_SYSTEM
+
+
+def test_discuss_prompt_is_nonempty():
+    assert len(INGEST_DISCUSS_SYSTEM) > 100
