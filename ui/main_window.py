@@ -17,7 +17,8 @@ from config import APP_TITLE, ASSETS_DIR
 from storage.note_store import save_raw_file
 
 from ui.cartoon_widgets import (
-    FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT,
+    FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT, FONT_INPUT,
+    CartoonButton,
     hex_to_rgb as _hex_to_rgb_shared, make_card_png as _shared_card_png,
 )
 from ui.input_tab import InputTab
