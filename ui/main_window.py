@@ -25,6 +25,7 @@ from ui.upload_tab import UploadTab, SUPPORTED as UPLOAD_HANDLERS
 from ui.search_tab import SearchTab
 from ui.chat_tab import ChatTab
 from ui.graph_tab import GraphTab, _GraphWindow
+from ui.lint_tab import LintTab
 
 PET_DIR = ASSETS_DIR
 PET_STATES = ("idle", "attack", "happy", "sleep", "eat")
@@ -52,6 +53,7 @@ ACTIONS = [
     ("搜索", "🔍", SearchTab, "Ctrl+3", LAVENDER,    "#7a5acc", "#f3eefc", "#d8cefa"),
     ("问答", "💬", ChatTab,   "Ctrl+4", ORANGE,      "#dba42a", "#fff8e0", "#ffe4a8"),
     ("图谱", "🕸️", GraphTab,  "Ctrl+5", "#9b59b6",   "#7d3c98", "#f5eeff", "#d4b8f0"),
+    ("体检", "🩺", LintTab,  "Ctrl+6", "#e74c3c",   "#c0392b", "#fff0f0", "#f0c0c0"),
 ]
 
 # Pet behaviour
@@ -439,6 +441,7 @@ class MainWindow:
         root.bind_all("<Control-Key-3>", lambda _e: self._shortcut_open(2))
         root.bind_all("<Control-Key-4>", lambda _e: self._shortcut_open(3))
         root.bind_all("<Control-Key-5>", lambda _e: self._shortcut_open(4))
+        root.bind_all("<Control-Key-6>", lambda _e: self._shortcut_open(5))
         root.bind_all("<Escape>", lambda _e: self._close_panel())
         root.focus_force()
 
