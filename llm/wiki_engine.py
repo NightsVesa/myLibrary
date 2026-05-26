@@ -434,7 +434,7 @@ def ingest_note(
                     page_title=item.get("name", slug),
                     contribution=item.get("contribution", ""),
                     source_filename=source_filename,
-                    page_type=prefix.rstrip("s"),
+                    page_type=prefix[:-1],
                     related=page_related,
                 )
         except Exception:
