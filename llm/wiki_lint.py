@@ -23,6 +23,9 @@ def static_checks(wiki_dir: Path) -> list[LintFinding]:
     _check_broken_links(wiki_dir, findings)
     _check_duplicate_index(wiki_dir, findings)
     _check_index_disk_drift(wiki_dir, findings)
+    _check_heading_drift(wiki_dir, findings)
+    _check_empty_links(wiki_dir, findings)
+    _check_stray_files(wiki_dir, findings)
     return findings
 
 
@@ -30,6 +33,8 @@ def _check_orphans(wiki_dir: Path, findings: list[LintFinding]) -> None:
     g = parse_wiki_graph(wiki_dir)
     targets = {e.target for e in g.edges}
     for node in g.nodes:
+        if not node.id:
+            continue
         if node.id not in targets:
             findings.append(LintFinding(
                 severity="warn", kind="orphan", location=node.id,
@@ -111,3 +116,54 @@ def _check_index_disk_drift(wiki_dir: Path, findings: list[LintFinding]) -> None
                         message="File exists on disk but not listed in index.md",
                         suggestion="Re-run ingest or add to index manually",
                     ))
+
+
+_HEADING_DRIFT = re.compile(
+    r"^(\*\*Sources?\*\*|\*\*来源\*\*|\*\*Related\*\*|## Source$|## Refs?$|## References?$)",
+    re.MULTILINE,
+)
+_EMPTY_LINK = re.compile(r"\[.+?\]\(\s*\)")
+_KNOWN_ROOT_FILES = {"index.md", "log.md"}
+
+
+def _check_heading_drift(wiki_dir: Path, findings: list[LintFinding]) -> None:
+    for sub in ("sources", "entities", "concepts"):
+        sd = wiki_dir / sub
+        if not sd.exists():
+            continue
+        for f in sd.iterdir():
+            if not f.is_file() or f.suffix != ".md":
+                continue
+            text = f.read_text(encoding="utf-8")
+            for m in _HEADING_DRIFT.finditer(text):
+                findings.append(LintFinding(
+                    severity="warn", kind="heading_drift",
+                    location=f"{sub}/{f.name}",
+                    message=f"Non-standard heading '{m.group(0).strip()}'",
+                    suggestion="Replace with '## Sources' or '## Related'",
+                ))
+
+
+def _check_empty_links(wiki_dir: Path, findings: list[LintFinding]) -> None:
+    idx = wiki_dir / "index.md"
+    if not idx.exists():
+        return
+    text = idx.read_text(encoding="utf-8")
+    for m in _EMPTY_LINK.finditer(text):
+        findings.append(LintFinding(
+            severity="error", kind="empty_link",
+            location="index.md",
+            message=f"Empty link: {m.group(0)}",
+            suggestion="Fix the href or remove the entry",
+        ))
+
+
+def _check_stray_files(wiki_dir: Path, findings: list[LintFinding]) -> None:
+    for f in wiki_dir.iterdir():
+        if f.is_file() and f.name not in _KNOWN_ROOT_FILES:
+            findings.append(LintFinding(
+                severity="info", kind="stray_file",
+                location=f.name,
+                message=f"Unexpected file in wiki root: {f.name}",
+                suggestion="Move to a subdirectory or delete",
+            ))

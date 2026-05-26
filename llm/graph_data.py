@@ -45,7 +45,8 @@ def parse_wiki_graph(wiki_dir: Path) -> Graph:
             try:
                 title = line[line.index("[") + 1:line.index("](")]
                 filename = line[line.index("](") + 2:line.index(")")]
-                node_map[filename] = (title, current_kind)
+                if filename:
+                    node_map[filename] = (title, current_kind)
             except ValueError:
                 continue
 

@@ -91,3 +91,37 @@ def test_static_checks_finds_unindexed_file(wiki):
     findings = static_checks(wiki)
     unindexed = [f for f in findings if f.kind == "unindexed_file"]
     assert any("secret.md" in f.location for f in unindexed)
+
+
+def test_static_checks_finds_heading_drift(wiki):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n- [E](entities/e.md) — e\n## Concepts\n",
+        encoding="utf-8",
+    )
+    (wiki / "entities" / "e.md").write_text(
+        "# E\n\nContent.\n\n**Sources**\n\n- src.md\n",
+        encoding="utf-8",
+    )
+    findings = static_checks(wiki)
+    drift = [f for f in findings if f.kind == "heading_drift"]
+    assert any("**Sources**" in f.message for f in drift)
+
+
+def test_static_checks_finds_empty_link(wiki):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n- [Empty]()\n## Concepts\n",
+        encoding="utf-8",
+    )
+    findings = static_checks(wiki)
+    empty = [f for f in findings if f.kind == "empty_link"]
+    assert len(empty) >= 1
+
+
+def test_static_checks_finds_stray_file(wiki):
+    (wiki / "index.md").write_text("## Sources\n## Entities\n## Concepts\n",
+                                    encoding="utf-8")
+    (wiki / "_chat_preview.md").write_text("temp", encoding="utf-8")
+
+    findings = static_checks(wiki)
+    stray = [f for f in findings if f.kind == "stray_file"]
+    assert any("_chat_preview" in f.location for f in stray)
