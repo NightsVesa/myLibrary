@@ -807,15 +807,17 @@ class MainWindow:
         self._graph_win = None
 
     def _open_reader(self, path: Path) -> None:
-        """Open a wiki page in the reader window (reuse SearchTab's reader)."""
+        """Open a wiki page in a reader window (reuse if compatible)."""
         from ui.search_tab import _ReaderWindow
-        if hasattr(self.root, "_active_reader") and self.root._active_reader is not None:
-            reader = self.root._active_reader
-            reader._load_path(path)
-            reader.lift()
-        else:
-            reader = _ReaderWindow(self.root, path, query="", bg_color="#fafbff", edge_color="#d4b8f0")
-            self.root._active_reader = reader
+        prev = getattr(self.root, "_active_reader", None)
+        if prev is not None:
+            try:
+                prev.destroy()
+            except tk.TclError:
+                pass
+            self.root._active_reader = None
+        reader = _ReaderWindow(self.root, path, query="", bg_color="#fafbff", edge_color="#d4b8f0")
+        self.root._active_reader = reader
 
     # ── drag-and-drop file ingestion ────────────────────────────────────────
 
