@@ -932,7 +932,49 @@ class MainWindow:
         sb.pack(side="right", fill="y")
         text_widget.pack(side="left", fill="both", expand=True)
 
-        # Input area
+        ready = [False]
+
+        # ── closures (defined before widgets that reference them) ──────
+        def _dismiss():
+            try:
+                panel.destroy()
+            except tk.TclError:
+                pass
+
+        def _on_close():
+            user_q.put("__CANCEL__")
+            _dismiss()
+
+        def _append_text(content: str) -> None:
+            text_widget.config(state="normal")
+            text_widget.insert("end", content)
+            text_widget.config(state="disabled")
+            text_widget.see("end")
+
+        def _append_user(content: str) -> None:
+            text_widget.config(state="normal")
+            text_widget.insert("end", f"\n👤 {content}\n\n", "user")
+            text_widget.config(state="disabled")
+            text_widget.see("end")
+
+        text_widget.tag_config("user", foreground="#7a5acc", font=FONT_BODY_BOLD)
+        text_widget.tag_config("status", foreground="#6b7c8f", font=FONT_HINT)
+
+        def _send():
+            text = entry.get().strip()
+            if not text:
+                return
+            _append_user(text)
+            entry.delete(0, "end")
+            user_q.put(text)
+
+        def _confirm():
+            user_q.put("__CONFIRM__")
+
+        def _skip():
+            user_q.put("__CANCEL__")
+
+        # ── widgets ───────────────────────────────────────────────────
         input_frame = tk.Frame(panel, bg="#ffffff")
         input_frame.place(x=12, y=ph - 88, width=pw - 24, height=32)
         entry = tk.Entry(input_frame, font=FONT_INPUT, bg="#f8f6ff",
@@ -950,44 +992,8 @@ class MainWindow:
         skip_btn = CartoonButton(btn_frame, "⏭ 跳过", command=_skip, kind="pink")
         skip_btn.pack(side="right")
         confirm_btn.pack(side="right", padx=6)
-        # Hide confirm until ready.
         for b in (confirm_btn, skip_btn):
             b.pack_forget()
-
-        ready = [False]
-
-        def _send():
-            text = entry.get().strip()
-            if not text:
-                return
-            _append_user(text)
-            entry.delete(0, "end")
-            user_q.put(text)
-
-        def _confirm():
-            user_q.put("__CONFIRM__")
-
-        def _skip():
-            user_q.put("__CANCEL__")
-
-        def _append_text(content: str) -> None:
-            text_widget.config(state="normal")
-            text_widget.insert("end", content)
-            text_widget.config(state="disabled")
-            text_widget.see("end")
-
-        def _append_user(content: str) -> None:
-            text_widget.config(state="normal")
-            text_widget.insert("end", f"\n👤 {content}\n\n", "user")
-            text_widget.config(state="disabled")
-            text_widget.see("end")
-
-        text_widget.tag_config("user", foreground="#7a5acc", font=FONT_BODY_BOLD)
-        text_widget.tag_config("status", foreground="#6b7c8f", font=FONT_HINT)
-
-        def _on_close():
-            user_q.put("__CANCEL__")
-            _dismiss()
 
         # Close button click
         cv.tag_bind(
@@ -995,12 +1001,6 @@ class MainWindow:
                                 fill="", outline=""),
             "<Button-1>", lambda _e: _on_close(),
         )
-
-        def _dismiss():
-            try:
-                panel.destroy()
-            except tk.TclError:
-                pass
 
         # ── Worker thread ───────────────────────────────────────────────
         def _worker():
