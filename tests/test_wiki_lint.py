@@ -38,3 +38,56 @@ def test_static_checks_finds_orphan(wiki):
     orphans = [f for f in findings if f.kind == "orphan"]
     assert len(orphans) >= 1
     assert any("entities/e.md" in f.location for f in orphans)
+
+
+def test_static_checks_finds_broken_related_link(wiki):
+    (wiki / "index.md").write_text(
+        "## Sources\n- [A](sources/summary_a.md) — a\n"
+        "## Entities\n- [E](entities/e.md) — e\n## Concepts\n",
+        encoding="utf-8",
+    )
+    (wiki / "sources" / "summary_a.md").write_text(
+        "# A\n\n## Related\n\n- [E](entities/e.md)\n- [Ghost](entities/ghost.md)\n",
+        encoding="utf-8",
+    )
+    (wiki / "entities" / "e.md").write_text("# E\n", encoding="utf-8")
+
+    findings = static_checks(wiki)
+    broken = [f for f in findings if f.kind == "broken_link"]
+    assert any("ghost.md" in f.message for f in broken)
+
+
+def test_static_checks_finds_duplicate_index_entry(wiki):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n"
+        "- [E](entities/e.md) — first\n"
+        "- [E](entities/e.md) — second\n"
+        "## Concepts\n",
+        encoding="utf-8",
+    )
+    (wiki / "entities" / "e.md").write_text("# E\n", encoding="utf-8")
+
+    findings = static_checks(wiki)
+    dupes = [f for f in findings if f.kind == "duplicate_index"]
+    assert len(dupes) >= 1
+
+
+def test_static_checks_finds_index_disk_drift(wiki):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n- [E](entities/e.md) — e\n## Concepts\n",
+        encoding="utf-8",
+    )
+
+    findings = static_checks(wiki)
+    drift = [f for f in findings if f.kind == "missing_file"]
+    assert any("entities/e.md" in f.location for f in drift)
+
+
+def test_static_checks_finds_unindexed_file(wiki):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n## Concepts\n", encoding="utf-8")
+    (wiki / "entities" / "secret.md").write_text("# Secret\n", encoding="utf-8")
+
+    findings = static_checks(wiki)
+    unindexed = [f for f in findings if f.kind == "unindexed_file"]
+    assert any("secret.md" in f.location for f in unindexed)
