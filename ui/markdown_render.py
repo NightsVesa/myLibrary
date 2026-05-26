@@ -163,7 +163,16 @@ def _insert_inline(text: tk.Text, line: str, *, base_tag: str | None = None) -> 
         # Content to display = group(1) for all our patterns
         content = m.group(1)
         tags = tuple(t for t in (base_tag, tag) if t)
+        start_idx = text.index(tk.END)
         text.insert(tk.END, content, tags)
+        # Store URL for link tags so clicks can navigate.
+        if tag == "link" and m.lastindex and m.lastindex >= 2:
+            end_idx = text.index(tk.END)
+            link_map = getattr(text, "_link_map", None)
+            if link_map is None:
+                link_map = {}
+                text._link_map = link_map
+            link_map[(start_idx, end_idx)] = m.group(2)
         pos = m.end()
 
 

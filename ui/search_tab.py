@@ -1,4 +1,5 @@
 import tkinter as tk
+from pathlib import Path
 
 from search.grep_search import search_notes
 from ui.cartoon_widgets import (
@@ -394,6 +395,37 @@ class _ReaderWindow:
         else:
             render_markdown_into(self.text, source)
         self.text.config(state=tk.DISABLED)
+        self.text.tag_bind("link", "<Button-1>", self._on_link_click)
+        self.text.tag_config("link", foreground=SKY_DARK, underline=True)
+
+    def _on_link_click(self, event):
+        idx = self.text.index(f"@{event.x},{event.y}")
+        link_map = getattr(self.text, "_link_map", {})
+        for (start, end), url in link_map.items():
+            try:
+                if self.text.compare(start, "<=", idx) and self.text.compare(idx, "<=", end):
+                    self._load_path(url)
+                    return
+            except tk.TclError:
+                continue
+
+    def _load_path(self, path_str) -> None:
+        """Navigate the reader to a different wiki page.
+        Accepts a Path (from _open_reader) or a str (from a ## Related link).
+        """
+        import config as _cfg
+        if isinstance(path_str, Path):
+            target = path_str.resolve()
+        else:
+            target = (_cfg.WIKI_DIR / path_str).resolve()
+        if not target.is_relative_to(_cfg.WIKI_DIR.resolve()):
+            return
+        if not target.exists():
+            return
+        self.path = target
+        self.text.config(state=tk.NORMAL)
+        self.text.delete("1.0", tk.END)
+        self._render_markdown()
 
     # ── chrome (drawn on canvas, re-drawn on resize) ───────────────────────
 
