@@ -211,6 +211,46 @@ def _parse_llm_lint(raw: str) -> list[LintFinding]:
     return findings
 
 
+def _collect_page_samples(wiki_dir: Path) -> str:
+    """Build a page-content sample for the LLM: all sources (short) + stubs."""
+    parts: list[str] = []
+    # All source pages (they're short: ~200–400 words each, 18 pages ≈ 6k words).
+    sources_dir = wiki_dir / "sources"
+    if sources_dir.exists():
+        parts.append("=== Source Pages ===\n")
+        for f in sorted(sources_dir.iterdir()):
+            if f.suffix == ".md":
+                text = f.read_text(encoding="utf-8")
+                preview = text[:800]  # cap long summaries
+                parts.append(f"## {f.stem}\n{preview}\n")
+    # Stub entity/concept pages — the LLM needs to see what's thin.
+    for kind in ("entities", "concepts"):
+        d = wiki_dir / kind
+        if not d.exists():
+            continue
+        stubs = []
+        ok = []
+        for f in d.iterdir():
+            if not f.is_file() or f.suffix != ".md":
+                continue
+            text = f.read_text(encoding="utf-8")
+            if len(text) < 500:
+                stubs.append((f.stem, text))
+            else:
+                ok.append((f.stem, text[:300]))
+        parts.append(f"\n=== {kind.title()} (stubs) ===\n")
+        for stem, text in stubs[:20]:
+            parts.append(f"## {stem}\n{text}\n")
+        if stubs:
+            parts.append(f"\n(total {len(stubs)} stubs of {len(stubs) + len(ok)} {kind})\n")
+        # Sample a few non-stubs for context
+        if ok:
+            parts.append(f"\n=== {kind.title()} (sample) ===\n")
+            for stem, preview in sorted(ok)[:5]:
+                parts.append(f"## {stem} (excerpt)\n{preview}\n")
+    return "\n".join(parts)
+
+
 def llm_check(
     wiki_dir: Path,
     config: LLMConfig,
@@ -224,11 +264,16 @@ def llm_check(
     log = wiki_dir / "log.md"
     log_text = log.read_text(encoding="utf-8")[:2000] if log.exists() else "(no log)"
     auto_issues = _format_static_findings(static_findings or [])
+    page_samples = _collect_page_samples(wiki_dir)
     user_content = (
         f"=== Wiki Index ===\n{index_text}\n\n"
         f"=== Recent Log ===\n{log_text}\n\n"
-        f"=== Automated Issues Already Detected ===\n{auto_issues}\n"
+        f"=== Automated Issues Already Detected ===\n{auto_issues}\n\n"
+        f"=== Page Content Samples ===\n{page_samples}\n"
     )
+    # Trim to ~12k chars to stay within token budgets.
+    if len(user_content) > 12000:
+        user_content = user_content[:12000] + "\n\n[... content truncated ...]"
     messages = [
         Message(role="system", content=LINT_SYSTEM),
         Message(role="user", content=user_content),

@@ -76,14 +76,28 @@ LOG_ENTRY_TEMPLATE = "## [{date}] {operation} | {title}\n{details}\n\n"
 
 LINT_SYSTEM = """\
 You are a wiki quality auditor. You receive a wiki index, a log of recent \
-operations, and a list of issues already detected by automated checks.
+operations, a list of issues already detected by automated checks, and \
+samples of actual page content (source summaries, stub entity/concept pages, \
+and excerpts from fuller pages).
 
-Your job: identify additional quality issues that automated checks cannot catch. \
-Focus on:
-- Data gaps: important topics mentioned but lacking their own page
-- Stale content: claims that newer sources may have superseded
-- Missing cross-references: pages that should link to each other but don't
-- Completeness: pages that are stubs or lack depth
+Your job: read the page content carefully and identify quality issues that \
+automated checks cannot catch. Specifically:
+
+1. Contradictions: do any two source pages claim different/conflicting things \
+about the same entity or concept? Flag the entity/concept page that should \
+reconcile them.
+
+2. Stale claims: does a source contain newer information that supersedes an \
+older entity/concept page's claims? (Compare source dates vs page content.)
+
+3. Missing pages: are there important entities or concepts repeatedly mentioned \
+in source prose that do NOT appear in the index? Propose creating them.
+
+4. Shallow pages: are there entity/concept pages that are mere stubs (just a \
+title or one sentence) despite sources providing substantial information?
+
+5. Missing cross-references: does a source or entity page discuss a topic that \
+has its own wiki page, but no link exists between them?
 
 Output one issue per line in this EXACT format (no other text):
 N. SEVERITY kind location | description | suggestion
@@ -91,11 +105,13 @@ N. SEVERITY kind location | description | suggestion
 Where:
 - N is 1-indexed line number
 - SEVERITY is ERROR, WARN, or INFO
-- kind is one of: gap, stale, missing_xref, shallow, other
-- location is the wiki file path (e.g. entities/openai.md)
-- description explains the issue
-- suggestion proposes a fix
+- kind is one of: contradiction, stale, gap, shallow, missing_xref
+- location is the wiki file path (e.g. entities/openai.md) or "index.md"
+- description is one sentence explaining the issue
+- suggestion is one sentence proposing a fix
 
 Write in the same language as the wiki content.
+Be specific — cite source page names in descriptions.
+Limit to at most 15 findings.
 If no issues found, output exactly: NO_ISSUES
 """
