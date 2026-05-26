@@ -73,3 +73,29 @@ contain enough information, say so honestly.
 """
 
 LOG_ENTRY_TEMPLATE = "## [{date}] {operation} | {title}\n{details}\n\n"
+
+LINT_SYSTEM = """\
+You are a wiki quality auditor. You receive a wiki index, a log of recent \
+operations, and a list of issues already detected by automated checks.
+
+Your job: identify additional quality issues that automated checks cannot catch. \
+Focus on:
+- Data gaps: important topics mentioned but lacking their own page
+- Stale content: claims that newer sources may have superseded
+- Missing cross-references: pages that should link to each other but don't
+- Completeness: pages that are stubs or lack depth
+
+Output one issue per line in this EXACT format (no other text):
+N. SEVERITY kind location | description | suggestion
+
+Where:
+- N is 1-indexed line number
+- SEVERITY is ERROR, WARN, or INFO
+- kind is one of: gap, stale, missing_xref, shallow, other
+- location is the wiki file path (e.g. entities/openai.md)
+- description explains the issue
+- suggestion proposes a fix
+
+Write in the same language as the wiki content.
+If no issues found, output exactly: NO_ISSUES
+"""

@@ -3,9 +3,12 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Generator
 
+from llm.client import LLMConfig, Message, chat
 from llm.graph_data import parse_wiki_graph
-from llm.wiki_engine import _read_index_entries
+from llm.prompts import LINT_SYSTEM
+from llm.wiki_engine import _read_index_entries, _append_log
 
 
 @dataclass(frozen=True)
@@ -167,3 +170,85 @@ def _check_stray_files(wiki_dir: Path, findings: list[LintFinding]) -> None:
                 message=f"Unexpected file in wiki root: {f.name}",
                 suggestion="Move to a subdirectory or delete",
             ))
+
+
+# ── LLM-based check ──────────────────────────────────────────────────────
+
+_SEV_MAP = {"ERROR": "error", "WARN": "warn", "INFO": "info"}
+
+
+def _format_static_findings(findings: list[LintFinding]) -> str:
+    if not findings:
+        return "(no automated issues detected)"
+    lines = []
+    for f in findings:
+        lines.append(f"- [{f.severity.upper()}] {f.kind}: {f.location} — {f.message}")
+    return "\n".join(lines)
+
+
+def _parse_llm_lint(raw: str) -> list[LintFinding]:
+    findings: list[LintFinding] = []
+    if "NO_ISSUES" in raw.strip():
+        return findings
+    for line in raw.strip().splitlines():
+        line = line.strip()
+        if not line or not line[0].isdigit():
+            continue
+        rest = line.split(". ", 1)[-1] if ". " in line else line
+        parts = rest.split(" | ")
+        if len(parts) < 2:
+            continue
+        tokens = parts[0].strip().split(None, 2)
+        if len(tokens) < 3:
+            continue
+        sev = _SEV_MAP.get(tokens[0], "info")
+        kind = tokens[1]
+        loc = tokens[2]
+        msg = parts[1].strip() if len(parts) > 1 else ""
+        sug = parts[2].strip() if len(parts) > 2 else ""
+        findings.append(LintFinding(severity=sev, kind=kind, location=loc,
+                                     message=msg, suggestion=sug))
+    return findings
+
+
+def llm_check(
+    wiki_dir: Path,
+    config: LLMConfig,
+    *,
+    static_findings: list[LintFinding] | None = None,
+) -> Generator[LintFinding, None, None]:
+    if not config.api_key:
+        return
+    idx = wiki_dir / "index.md"
+    index_text = idx.read_text(encoding="utf-8") if idx.exists() else "(empty)"
+    log = wiki_dir / "log.md"
+    log_text = log.read_text(encoding="utf-8")[:2000] if log.exists() else "(no log)"
+    auto_issues = _format_static_findings(static_findings or [])
+    user_content = (
+        f"=== Wiki Index ===\n{index_text}\n\n"
+        f"=== Recent Log ===\n{log_text}\n\n"
+        f"=== Automated Issues Already Detected ===\n{auto_issues}\n"
+    )
+    messages = [
+        Message(role="system", content=LINT_SYSTEM),
+        Message(role="user", content=user_content),
+    ]
+    raw = chat(config, messages)
+    yield from _parse_llm_lint(raw)
+
+
+def lint_wiki(
+    wiki_dir: Path,
+    config: LLMConfig,
+) -> Generator[LintFinding, None, None]:
+    static = static_checks(wiki_dir)
+    yield from static
+    llm_findings = list(llm_check(wiki_dir, config, static_findings=static))
+    yield from llm_findings
+    total = len(static) + len(llm_findings)
+    errors = sum(1 for f in static + llm_findings if f.severity == "error")
+    warns = sum(1 for f in static + llm_findings if f.severity == "warn")
+    _append_log(
+        wiki_dir, "lint", "Health check",
+        f"{total} issues ({errors} errors, {warns} warnings)",
+    )

@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from llm.client import LLMConfig
-from llm.wiki_lint import LintFinding, static_checks
+from llm.wiki_lint import LintFinding, static_checks, llm_check, lint_wiki
 
 
 @pytest.fixture
@@ -125,3 +125,61 @@ def test_static_checks_finds_stray_file(wiki):
     findings = static_checks(wiki)
     stray = [f for f in findings if f.kind == "stray_file"]
     assert any("_chat_preview" in f.location for f in stray)
+
+
+# --- LLM check -----------------------------------------------------------
+
+@pytest.fixture
+def config():
+    return LLMConfig(api_base="https://fake/v1", api_key="k", model="m")
+
+
+def test_llm_check_returns_findings(wiki, config):
+    (wiki / "index.md").write_text(
+        "## Sources\n- [A](sources/summary_a.md) — a\n"
+        "## Entities\n- [E](entities/e.md) — e\n## Concepts\n",
+        encoding="utf-8",
+    )
+    (wiki / "sources" / "summary_a.md").write_text("# A\n", encoding="utf-8")
+    (wiki / "entities" / "e.md").write_text("# E\n", encoding="utf-8")
+
+    llm_response = (
+        "1. WARN gap entities/e.md | Page 'E' is very short | "
+        "Add a description based on source A"
+    )
+    with patch("llm.wiki_lint.chat", return_value=llm_response):
+        findings = list(llm_check(wiki, config))
+
+    assert len(findings) >= 1
+    assert findings[0].kind == "gap"
+
+
+def test_llm_check_skipped_without_api_key(wiki):
+    no_key = LLMConfig(api_base="https://fake/v1", api_key="", model="m")
+    findings = list(llm_check(wiki, no_key))
+    assert len(findings) == 0
+
+
+def test_lint_wiki_combines_static_and_llm(wiki, config):
+    (wiki / "index.md").write_text(
+        "## Sources\n- [A](sources/summary_a.md) — a\n"
+        "## Entities\n## Concepts\n",
+        encoding="utf-8",
+    )
+    (wiki / "sources" / "summary_a.md").write_text("# A\n", encoding="utf-8")
+
+    with patch("llm.wiki_lint.chat", return_value="1. INFO gap index.md | Wiki is small | Add more sources"):
+        findings = list(lint_wiki(wiki, config))
+
+    kinds = {f.kind for f in findings}
+    assert "gap" in kinds or "orphan" in kinds
+
+
+def test_lint_wiki_appends_log(wiki, config):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n## Concepts\n", encoding="utf-8")
+    with patch("llm.wiki_lint.chat", return_value="NO_ISSUES"):
+        list(lint_wiki(wiki, config))
+    log = (wiki / "log.md").read_text(encoding="utf-8")
+    assert "lint" in log
+    assert "Health check" in log
