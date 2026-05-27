@@ -417,7 +417,9 @@ class _ReaderWindow:
         if isinstance(path_str, Path):
             target = path_str.resolve()
         else:
-            target = (_cfg.WIKI_DIR / path_str).resolve()
+            target = (self.path.parent / path_str).resolve()
+            if not target.exists():
+                target = (_cfg.WIKI_DIR / path_str).resolve()
         if not target.is_relative_to(_cfg.WIKI_DIR.resolve()):
             return
         if not target.exists():

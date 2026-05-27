@@ -1,5 +1,6 @@
 """Wiki health-check: static analysis + optional LLM audit."""
 
+import posixpath
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ def static_checks(wiki_dir: Path) -> list[LintFinding]:
     _check_heading_drift(wiki_dir, findings)
     _check_empty_links(wiki_dir, findings)
     _check_stray_files(wiki_dir, findings)
+    _check_shallow_pages(wiki_dir, findings)
     return findings
 
 
@@ -50,6 +52,11 @@ _RELATED_LINK = re.compile(r"^- \[.+?\]\((.+?)\)$")
 
 
 def _check_broken_links(wiki_dir: Path, findings: list[LintFinding]) -> None:
+    def normalize_target(page_id: str, target: str) -> str:
+        if target.split("/", 1)[0] in {"sources", "entities", "concepts"}:
+            return target
+        return posixpath.normpath(posixpath.join(posixpath.dirname(page_id), target))
+
     for sub in ("sources", "entities", "concepts"):
         sd = wiki_dir / sub
         if not sd.exists():
@@ -68,7 +75,7 @@ def _check_broken_links(wiki_dir: Path, findings: list[LintFinding]) -> None:
                 if in_related:
                     m = _RELATED_LINK.match(line.strip())
                     if m:
-                        target = m.group(1)
+                        target = normalize_target(page_id, m.group(1))
                         if not (wiki_dir / target).exists():
                             findings.append(LintFinding(
                                 severity="error", kind="broken_link",
@@ -121,6 +128,8 @@ def _check_index_disk_drift(wiki_dir: Path, findings: list[LintFinding]) -> None
                     ))
 
 
+STUB_THRESHOLD = 500  # chars — pages shorter than this are stubs
+
 _HEADING_DRIFT = re.compile(
     r"^(\*\*Sources?\*\*|\*\*来源\*\*|\*\*Related\*\*|## Source$|## Refs?$|## References?$)",
     re.MULTILINE,
@@ -170,6 +179,24 @@ def _check_stray_files(wiki_dir: Path, findings: list[LintFinding]) -> None:
                 message=f"Unexpected file in wiki root: {f.name}",
                 suggestion="Move to a subdirectory or delete",
             ))
+
+
+def _check_shallow_pages(wiki_dir: Path, findings: list[LintFinding]) -> None:
+    for sub in ("entities", "concepts"):
+        sd = wiki_dir / sub
+        if not sd.exists():
+            continue
+        for f in sd.iterdir():
+            if not f.is_file() or f.suffix != ".md":
+                continue
+            text = f.read_text(encoding="utf-8")
+            if len(text) < STUB_THRESHOLD:
+                findings.append(LintFinding(
+                    severity="info", kind="shallow",
+                    location=f"{sub}/{f.name}",
+                    message=f"Page is a stub ({len(text)} chars) — only title + one line",
+                    suggestion="Expand with information from related source pages",
+                ))
 
 
 # ── LLM-based check ──────────────────────────────────────────────────────
@@ -234,7 +261,7 @@ def _collect_page_samples(wiki_dir: Path) -> str:
             if not f.is_file() or f.suffix != ".md":
                 continue
             text = f.read_text(encoding="utf-8")
-            if len(text) < 500:
+            if len(text) < STUB_THRESHOLD:
                 stubs.append((f.stem, text))
             else:
                 ok.append((f.stem, text[:300]))

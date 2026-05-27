@@ -47,7 +47,7 @@ def test_static_checks_finds_broken_related_link(wiki):
         encoding="utf-8",
     )
     (wiki / "sources" / "summary_a.md").write_text(
-        "# A\n\n## Related\n\n- [E](entities/e.md)\n- [Ghost](entities/ghost.md)\n",
+        "# A\n\n## Related\n\n- [E](../entities/e.md)\n- [Ghost](../entities/ghost.md)\n",
         encoding="utf-8",
     )
     (wiki / "entities" / "e.md").write_text("# E\n", encoding="utf-8")
@@ -125,6 +125,18 @@ def test_static_checks_finds_stray_file(wiki):
     findings = static_checks(wiki)
     stray = [f for f in findings if f.kind == "stray_file"]
     assert any("_chat_preview" in f.location for f in stray)
+
+
+def test_static_checks_finds_shallow_page(wiki):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n- [E](entities/e.md) — e\n## Concepts\n",
+        encoding="utf-8",
+    )
+    (wiki / "entities" / "e.md").write_text("# E\n\nOne line.\n", encoding="utf-8")
+
+    findings = static_checks(wiki)
+    shallow = [f for f in findings if f.kind == "shallow"]
+    assert any("entities/e.md" in f.location for f in shallow)
 
 
 # --- LLM check -----------------------------------------------------------

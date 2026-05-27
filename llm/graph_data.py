@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import posixpath
 import re
 
 
@@ -54,6 +55,11 @@ def parse_wiki_graph(wiki_dir: Path) -> Graph:
     edges: list[Edge] = []
     related_pat = re.compile(r"^- \[.+?\]\((.+?)\)$")
 
+    def normalize_target(source_id: str, target: str) -> str:
+        if target.split("/", 1)[0] in {"sources", "entities", "concepts"}:
+            return target
+        return posixpath.normpath(posixpath.join(posixpath.dirname(source_id), target))
+
     for nid, (title, kind) in node_map.items():
         page = wiki_dir / nid
         if not page.exists():
@@ -70,7 +76,7 @@ def parse_wiki_graph(wiki_dir: Path) -> Graph:
             if in_related:
                 m = related_pat.match(line.strip())
                 if m:
-                    target = m.group(1)
+                    target = normalize_target(nid, m.group(1))
                     # Only add edge if target is a known node
                     if target in node_map:
                         edges.append(Edge(nid, target))
