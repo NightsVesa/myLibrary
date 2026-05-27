@@ -6,7 +6,7 @@ from ttkbootstrap.dialogs import Messagebox
 
 from converter.docx_converter import docx_to_markdown
 from converter.pdf_converter import pdf_to_markdown
-from storage.note_store import save_note
+from storage.note_store import save_raw_file
 from llm.wiki_engine import background_ingest
 from ui.cartoon_widgets import (
     WHITE, SKY_LIGHT, SKY_PALE, TEXT_LIGHT, TEXT_MAIN,
@@ -29,10 +29,11 @@ SUPPORTED = {
 
 class UploadTab:
     def __init__(self, parent, bg_color: str = WHITE,
-                 edge_color: str = SKY_LIGHT) -> None:
+                 edge_color: str = SKY_LIGHT, *, main=None) -> None:
         self.frame = tk.Frame(parent, bg=bg_color)
         self._bg = bg_color
         self._edge = edge_color
+        self._main = main
         self._selected: Path | None = None
         self._build()
 
@@ -124,18 +125,18 @@ class UploadTab:
             Messagebox.show_warning("请先选择文件", parent=self.frame)
             return
         suffix = self._selected.suffix.lower()
-        converter = SUPPORTED.get(suffix)
-        if converter is None:
+        if suffix not in SUPPORTED:
             Messagebox.show_error("不支持的文件格式", parent=self.frame)
             return
         try:
-            md = converter(self._selected)
-            title = self._selected.stem
-            path = save_note(md, title=title)
-            background_ingest(path)
+            path = save_raw_file(self._selected)
+            if self._main:
+                self._main._ingest_with_animation([path])
+            else:
+                background_ingest(path)
             Messagebox.show_info(f"已保存:\n{path.name}", parent=self.frame)
             self._selected = None
             self.file_label.config(text="未选择文件", fg=TEXT_LIGHT)
             self._set_preview("")
         except Exception as exc:
-            Messagebox.show_error(f"转换失败:\n{exc}", parent=self.frame)
+            Messagebox.show_error(f"保存失败:\n{exc}", parent=self.frame)

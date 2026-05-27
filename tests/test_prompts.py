@@ -1,32 +1,57 @@
-from llm.prompts import INGEST_SYSTEM, QUERY_SYSTEM, INDEX_ENTRY_TEMPLATE, LOG_ENTRY_TEMPLATE
+from llm.prompts import (
+    INGEST_DISCUSS_SYSTEM,
+    INGEST_EXTRACT_SYSTEM,
+    ingest_extract_system,
+    LINT_SYSTEM,
+    MERGE_PAGE_SYSTEM,
+    QUERY_SYSTEM,
+    LOG_ENTRY_TEMPLATE,
+)
 
 
-def test_ingest_system_is_nonempty_string():
-    assert isinstance(INGEST_SYSTEM, str)
-    assert len(INGEST_SYSTEM) > 50
+def test_extract_prompt_mentions_json():
+    assert "JSON" in INGEST_EXTRACT_SYSTEM
 
 
-def test_query_system_is_nonempty_string():
-    assert isinstance(QUERY_SYSTEM, str)
-    assert len(QUERY_SYSTEM) > 50
+def test_extract_prompt_lists_required_keys():
+    for key in ("summary", "entities", "concepts"):
+        assert key in INGEST_EXTRACT_SYSTEM
 
 
-def test_ingest_system_mentions_wiki():
-    assert "wiki" in INGEST_SYSTEM.lower() or "维基" in INGEST_SYSTEM
+def test_merge_prompt_mentions_existing_and_new():
+    assert "existing" in MERGE_PAGE_SYSTEM.lower()
+    assert "new contribution" in MERGE_PAGE_SYSTEM.lower()
 
 
-def test_query_system_mentions_answer():
-    lower = QUERY_SYSTEM.lower()
-    assert "answer" in lower or "回答" in QUERY_SYSTEM or "question" in lower
-
-
-def test_index_entry_template_has_placeholders():
-    assert "{title}" in INDEX_ENTRY_TEMPLATE
-    assert "{filename}" in INDEX_ENTRY_TEMPLATE
-    assert "{summary}" in INDEX_ENTRY_TEMPLATE
+def test_query_prompt_unchanged_contract():
+    assert "wiki" in QUERY_SYSTEM.lower()
 
 
 def test_log_entry_template_has_placeholders():
-    assert "{date}" in LOG_ENTRY_TEMPLATE
-    assert "{operation}" in LOG_ENTRY_TEMPLATE
-    assert "{title}" in LOG_ENTRY_TEMPLATE
+    sample = LOG_ENTRY_TEMPLATE.format(
+        date="2026-05-22 10:00", operation="ingest", title="t", details="d"
+    )
+    assert "2026-05-22" in sample
+    assert "ingest" in sample
+
+
+def test_extract_prompt_function_respects_max_items():
+    prompt_10 = ingest_extract_system(max_items=10)
+    assert "AT MOST 10" in prompt_10
+    prompt_20 = ingest_extract_system(max_items=20)
+    assert "AT MOST 20" in prompt_20
+
+
+def test_merge_prompt_says_no_sources_related():
+    lower = MERGE_PAGE_SYSTEM.lower()
+    assert "do not emit" in lower
+    assert "## sources" in lower
+    assert "## related" in lower
+
+
+def test_discuss_prompt_mentions_ready_marker():
+    assert "[READY_TO_INGEST]" in INGEST_DISCUSS_SYSTEM
+
+
+def test_discuss_prompt_is_nonempty():
+    assert len(INGEST_DISCUSS_SYSTEM) > 100

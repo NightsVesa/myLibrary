@@ -1,5 +1,8 @@
+import logging as _err_log
 import math
+import queue
 import re
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -11,19 +14,22 @@ from PIL import Image, ImageDraw, ImageTk
 from tkinterdnd2 import DND_FILES
 
 from config import APP_TITLE, ASSETS_DIR
-from storage.note_store import save_note
-from llm.wiki_engine import background_ingest
+from storage.note_store import save_raw_file
+
 from ui.cartoon_widgets import (
-    FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT,
+    FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT, FONT_INPUT,
+    CartoonButton,
     hex_to_rgb as _hex_to_rgb_shared, make_card_png as _shared_card_png,
 )
 from ui.input_tab import InputTab
 from ui.upload_tab import UploadTab, SUPPORTED as UPLOAD_HANDLERS
 from ui.search_tab import SearchTab
 from ui.chat_tab import ChatTab
+from ui.graph_tab import GraphTab, _GraphWindow
+from ui.lint_tab import LintTab
 
 PET_DIR = ASSETS_DIR
-PET_STATES = ("idle", "attack", "happy", "sleep")
+PET_STATES = ("idle", "attack", "happy", "sleep", "eat")
 TRANSPARENT = "#ff00ff"
 
 # ── Cartoon Sky-Blue palette (lifted from the HTML UI kit) ──────────────────
@@ -47,6 +53,8 @@ ACTIONS = [
     ("上传", "📁", UploadTab, "Ctrl+2", MINT,        "#3db88a", "#ebfaf3", "#a8eedd"),
     ("搜索", "🔍", SearchTab, "Ctrl+3", LAVENDER,    "#7a5acc", "#f3eefc", "#d8cefa"),
     ("问答", "💬", ChatTab,   "Ctrl+4", ORANGE,      "#dba42a", "#fff8e0", "#ffe4a8"),
+    ("图谱", "🕸️", GraphTab,  "Ctrl+5", "#9b59b6",   "#7d3c98", "#f5eeff", "#d4b8f0"),
+    ("体检", "🩺", LintTab,  "Ctrl+6", "#e74c3c",   "#c0392b", "#fff0f0", "#f0c0c0"),
 ]
 
 # Pet behaviour
@@ -403,6 +411,7 @@ class MainWindow:
         self._state = "idle"
         self._state_t0 = time.monotonic()
         self._happy_after_id = None
+        self._happy_persist = False
         self._sleep_after_id = None
         self._tick_alive = True
 
@@ -419,6 +428,7 @@ class MainWindow:
         self._panel: tk.Toplevel | None = None
         self._panel_bg: ImageTk.PhotoImage | None = None
         self._active_idx: int | None = None
+        self._graph_win: _GraphWindow | None = None
         self._panel_pinned = False
 
         self.canvas.bind("<Enter>", self._on_activity_enter)
@@ -431,6 +441,8 @@ class MainWindow:
         root.bind_all("<Control-Key-2>", lambda _e: self._shortcut_open(1))
         root.bind_all("<Control-Key-3>", lambda _e: self._shortcut_open(2))
         root.bind_all("<Control-Key-4>", lambda _e: self._shortcut_open(3))
+        root.bind_all("<Control-Key-5>", lambda _e: self._shortcut_open(4))
+        root.bind_all("<Control-Key-6>", lambda _e: self._shortcut_open(5))
         root.bind_all("<Escape>", lambda _e: self._close_panel())
         root.focus_force()
 
@@ -447,12 +459,18 @@ class MainWindow:
 
     # ── state machine ───────────────────────────────────────────────────────
 
-    def _set_state(self, state: str) -> None:
+    def _set_state(self, state: str, *, auto_end: bool = True) -> None:
         if state == self._state:
             return
         self._state = state
         self._state_t0 = time.monotonic()
         self.canvas.itemconfig(self._image_id, image=self._sprites[state])
+        if state == "happy" and not auto_end:
+            self._happy_persist = True
+        # Cancel pending sleep when switching to a non-idle/non-sleep state.
+        if state not in ("idle", "sleep") and self._sleep_after_id is not None:
+            self.root.after_cancel(self._sleep_after_id)
+            self._sleep_after_id = None
 
     def _tick(self) -> None:
         try:
@@ -480,6 +498,14 @@ class MainWindow:
                 else:
                     dx = math.sin((t - 0.14) * 28) * 4.0
                     dy = math.sin((t - 0.14) * 14) * 2.5
+            elif s == "eat":
+                # Gentle float + subtle nibble bob
+                dy = math.sin(t * 1.8) * 5.0
+                dx = math.sin(t * 0.9) * 1.5
+                # small chomp: faster vertical hop every ~0.6 s
+                chomp = math.sin(t * 10.5)
+                if chomp > 0.7:
+                    dy -= (chomp - 0.7) * 4.0
             elif s == "sleep":
                 if t < 0.35:
                     p = t / 0.35
@@ -516,11 +542,14 @@ class MainWindow:
     def _reset_sleep_timer(self) -> None:
         if self._sleep_after_id is not None:
             self.root.after_cancel(self._sleep_after_id)
+        # Only schedule auto-sleep when the pet is idling.
+        if self._state != "idle":
+            self._sleep_after_id = None
+            return
         self._sleep_after_id = self.root.after(SLEEP_IDLE_MS, self._go_sleep)
 
     def _go_sleep(self) -> None:
-        if self._state in ("attack", "happy"):
-            self._reset_sleep_timer()
+        if self._state != "idle":
             return
         self._set_state("sleep")
 
@@ -558,6 +587,8 @@ class MainWindow:
 
     def _end_happy(self) -> None:
         self._happy_after_id = None
+        if self._happy_persist:
+            return
         if self._state == "happy":
             self._set_state("idle")
 
@@ -619,13 +650,24 @@ class MainWindow:
         self._toggle_panel(idx, pinned=True)
 
     def _toggle_panel(self, idx: int, pinned: bool) -> None:
+        # Special case: graph opens as a standalone resizable window.
+        label, emoji, tab_cls, hint, accent, _shadow, pale_bg, edge_color = ACTIONS[idx]
+        if tab_cls is GraphTab:
+            if self._graph_win and self._graph_win.win.winfo_exists():
+                self._close_graph()
+                return
+            self._close_panel()
+            self._graph_win = _GraphWindow(
+                self.root, bg_color=pale_bg, edge_color=edge_color, main=self,
+            )
+            return
+
         if self._active_idx == idx and self._panel and self._panel.winfo_exists():
             self._close_panel()
             return
         self._close_panel()
         self._active_idx = idx
         self._panel_pinned = pinned
-        label, emoji, tab_cls, hint, accent, _shadow, pale_bg, edge_color = ACTIONS[idx]
         if tab_cls is ChatTab:
             pinned = True
 
@@ -729,7 +771,10 @@ class MainWindow:
             height=PANEL_H - content_top - PANEL_SHADOW - PANEL_BODY_PAD,
         )
 
-        tab = tab_cls(content, bg_color=pale_bg, edge_color=edge_color)
+        if tab_cls in (InputTab, UploadTab):
+            tab = tab_cls(content, bg_color=pale_bg, edge_color=edge_color, main=self)
+        else:
+            tab = tab_cls(content, bg_color=pale_bg, edge_color=edge_color)
         tab.frame.pack(fill=BOTH, expand=True)
 
         self._panel = panel
@@ -758,6 +803,22 @@ class MainWindow:
         self._active_idx = None
         self._panel_pinned = False
 
+    def _close_graph(self) -> None:
+        self._graph_win = None
+
+    def _open_reader(self, path: Path) -> None:
+        """Open a wiki page in a reader window (reuse if compatible)."""
+        from ui.search_tab import _ReaderWindow
+        prev = getattr(self.root, "_active_reader", None)
+        if prev is not None:
+            try:
+                prev.destroy()
+            except tk.TclError:
+                pass
+            self.root._active_reader = None
+        reader = _ReaderWindow(self.root, path, query="", bg_color="#fafbff", edge_color="#d4b8f0")
+        self.root._active_reader = reader
+
     # ── drag-and-drop file ingestion ────────────────────────────────────────
 
     def _on_files_dropped(self, event) -> None:
@@ -766,43 +827,279 @@ class MainWindow:
         if not paths:
             return
         ok, bad = [], []
+        saved_paths = []
         for raw in paths:
             p = Path(raw)
             if not p.exists():
                 bad.append((p, "文件不存在"))
                 continue
-            handler = UPLOAD_HANDLERS.get(p.suffix.lower())
-            if handler is None:
+            if p.suffix.lower() not in UPLOAD_HANDLERS:
                 bad.append((p, f"不支持的格式 {p.suffix}"))
                 continue
             try:
-                content = handler(p)
-                saved = save_note(content, title=p.stem)
-                background_ingest(saved)
-                ok.append(saved)
+                saved = save_raw_file(p)
+                saved_paths.append(saved)
             except Exception as exc:
                 bad.append((p, str(exc)))
 
-        # Celebrate with the happy animation when at least one file worked
-        if ok:
-            self._set_state("happy")
-            if self._happy_after_id is not None:
-                self.root.after_cancel(self._happy_after_id)
-            self._happy_after_id = self.root.after(HAPPY_HOLD_MS, self._end_happy)
-
-        # Feedback
-        if ok and not bad:
-            names = "\n".join(f"  {n.name}" for n in ok)
-            Messagebox.show_info(f"已保存 {len(ok)} 个文件:\n{names}", parent=self.root)
-        elif bad and not ok:
+        # Batch feedback — rejects upfront, then animates the saves.
+        if bad and not saved_paths:
             details = "\n".join(f"  {p.name}: {msg}" for p, msg in bad)
             Messagebox.show_error(f"全部失败:\n{details}", parent=self.root)
-        elif ok and bad:
-            ok_names = "\n".join(f"  ✓ {n.name}" for n in ok)
-            bad_names = "\n".join(f"  ✗ {p.name}: {msg}" for p, msg in bad)
-            Messagebox.show_warning(
-                f"部分成功:\n{ok_names}\n\n{bad_names}", parent=self.root,
-            )
+        else:
+            if bad:
+                bad_names = "\n".join(f"  {p.name}: {msg}" for p, msg in bad)
+                Messagebox.show_warning(
+                    f"部分文件无法读取:\n{bad_names}", parent=self.root,
+                )
+            if saved_paths:
+                self._ingest_with_animation(saved_paths)
+
+    # ── ingest feedback ────────────────────────────────────────────────────
+
+    MIN_EAT_MS = 2500  # keep eat animation for at least 2.5 s
+
+    def _ingest_with_animation(self, paths: list[Path]) -> None:
+        """Start eat animation, open discussion panel, then ingest."""
+        if not paths:
+            return
+        self._set_state("eat")
+        self._open_ingest_chat(paths)
+
+    def _open_ingest_chat(self, paths: list[Path]) -> None:
+        """Open a chat-style discussion panel for interactive ingest."""
+        from llm.client import LLMConfig
+        from llm.wiki_engine import discuss_and_ingest
+        import config as _cfg
+
+        llm_cfg = LLMConfig(
+            api_base=_cfg.LLM_API_BASE,
+            api_key=_cfg.LLM_API_KEY,
+            model=_cfg.LLM_MODEL,
+        )
+        if not llm_cfg.api_key:
+            # No LLM — fall back to silent background ingest.
+            from llm.wiki_engine import background_ingest
+            for p in paths:
+                background_ingest(p)
+            self._set_state("idle")
+            Messagebox.show_info(f"已开始处理 {len(paths)} 个文件", parent=self.root)
+            return
+
+        chat_q: queue.Queue[str] = queue.Queue()
+        user_q: queue.Queue[str] = queue.Queue()
+        path_iter = iter(paths)
+        self._current_note: Path | None = next(path_iter)
+        self._pending_paths = list(path_iter)
+
+        # ── Chat panel (Toplevel) ───────────────────────────────────────
+        pw, ph = 480, 520
+        panel = tk.Toplevel(self.root)
+        panel.overrideredirect(True)
+        panel.attributes("-topmost", True)
+        panel.config(bg=TRANSPARENT)
+        panel.wm_attributes("-transparentcolor", TRANSPARENT)
+        rx, ry = self.root.winfo_x(), self.root.winfo_y()
+        px = max(0, rx + self.window_w // 2 - pw // 2)
+        py = max(0, ry - ph - 16)
+        panel.geometry(f"{pw}x{ph}+{px}+{py}")
+
+        card = _shared_card_png(pw, ph, 20, "#ffffff", "#c0a8e0", "#c0a8e0", 6)
+        self._chat_bg = ImageTk.PhotoImage(card)
+
+        cv = tk.Canvas(panel, width=pw, height=ph,
+                       bg=TRANSPARENT, highlightthickness=0, borderwidth=0)
+        cv.pack()
+        cv.create_image(0, 0, image=self._chat_bg, anchor="nw")
+
+        # Title bar
+        cv.create_text(20, 22, text=f"讨论: {self._current_note.stem if self._current_note else '文件'}",
+                       anchor="w", fill=TEXT_MAIN, font=FONT_HEADING)
+        close_x = pw - 24
+        cv.create_text(close_x, 22, text="✕", fill=TEXT_LIGHT,
+                       font=("Microsoft YaHei", 12, "bold"))
+        cv.create_line(16, 44, pw - 16, 44, fill="#e8e0f0", width=1)
+
+        # Text widget for LLM streaming output
+        text_frame = tk.Frame(panel, bg="#ffffff")
+        text_frame.place(x=12, y=52, width=pw - 24, height=ph - 148)
+        text_widget = tk.Text(
+            text_frame, wrap="word", font=FONT_INPUT,
+            bg="#ffffff", fg=TEXT_MAIN, relief="flat",
+            state="disabled", padx=8, pady=6,
+            spacing1=2, spacing3=2,
+        )
+        sb = tk.Scrollbar(text_frame, command=text_widget.yview)
+        text_widget.config(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        text_widget.pack(side="left", fill="both", expand=True)
+
+        ready = [False]
+
+        # ── closures (defined before widgets that reference them) ──────
+        def _dismiss():
+            try:
+                panel.destroy()
+            except tk.TclError:
+                pass
+
+        def _on_close():
+            user_q.put("__CANCEL__")
+            _dismiss()
+
+        def _append_text(content: str) -> None:
+            text_widget.config(state="normal")
+            text_widget.insert("end", content)
+            text_widget.config(state="disabled")
+            text_widget.see("end")
+
+        def _append_user(content: str) -> None:
+            text_widget.config(state="normal")
+            text_widget.insert("end", f"\n👤 {content}\n\n", "user")
+            text_widget.config(state="disabled")
+            text_widget.see("end")
+
+        text_widget.tag_config("user", foreground="#7a5acc", font=FONT_BODY_BOLD)
+        text_widget.tag_config("status", foreground="#6b7c8f", font=FONT_HINT)
+
+        def _send():
+            text = entry.get().strip()
+            if not text:
+                return
+            _append_user(text)
+            entry.delete(0, "end")
+            user_q.put(text)
+
+        def _confirm():
+            user_q.put("__CONFIRM__")
+
+        def _skip():
+            user_q.put("__CANCEL__")
+
+        # ── widgets ───────────────────────────────────────────────────
+        input_frame = tk.Frame(panel, bg="#ffffff")
+        input_frame.place(x=12, y=ph - 88, width=pw - 24, height=32)
+        entry = tk.Entry(input_frame, font=FONT_INPUT, bg="#f8f6ff",
+                         fg=TEXT_MAIN, relief="flat", bd=0,
+                         highlightthickness=1, highlightbackground="#d4c8f0")
+        entry.pack(fill="both", expand=True, ipady=3)
+        entry.bind("<Return>", lambda _e: _send())
+
+        btn_frame = tk.Frame(panel, bg="#ffffff")
+        btn_frame.place(x=12, y=ph - 50, width=pw - 24, height=32)
+
+        send_btn = CartoonButton(btn_frame, "💬 发送", command=_send, kind="sky")
+        send_btn.pack(side="left", padx=(0, 6))
+        confirm_btn = CartoonButton(btn_frame, "✅ 确认提取", command=_confirm, kind="mint")
+        skip_btn = CartoonButton(btn_frame, "⏭ 跳过", command=_skip, kind="pink")
+        skip_btn.pack(side="right")
+        confirm_btn.pack(side="right", padx=6)
+        for b in (confirm_btn, skip_btn):
+            b.pack_forget()
+
+        # Close button click
+        cv.tag_bind(
+            cv.create_rectangle(close_x - 12, 10, close_x + 12, 34,
+                                fill="", outline=""),
+            "<Button-1>", lambda _e: _on_close(),
+        )
+
+        # ── Worker thread ───────────────────────────────────────────────
+        def _worker():
+            ok, err = 0, 0
+            p = self._current_note
+            if p:
+                try:
+                    result = discuss_and_ingest(
+                        p, llm_cfg,
+                        chat_q=chat_q, user_q=user_q,
+                    )
+                    if result:
+                        ok += 1
+                    else:
+                        err += 1
+                except Exception:
+                    _err_log.exception("discuss+ingest failed for %s", p)
+                    err += 1
+            self.root.after(0, lambda: self._finish_ingest(ok, err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+        # ── Poll loop ───────────────────────────────────────────────────
+        def _poll():
+            while True:
+                try:
+                    item = chat_q.get_nowait()
+                except queue.Empty:
+                    break
+                if item == "__READY__":
+                    ready[0] = True
+                    confirm_btn.pack(side="right", padx=6)
+                    skip_btn.pack(side="right")
+                elif item == "__DONE__":
+                    return  # let worker thread call _finish_ingest
+                elif item == "__ERROR__":
+                    _append_text("\n❌ 提取失败，关闭窗口重试\n")
+                    return
+                else:
+                    _append_text(item)
+            panel.after(50, _poll)
+
+        panel.after(50, _poll)
+
+    def _finish_ingest(self, ok: int, err: int) -> None:
+        self._set_state("idle")
+        self._show_ingest_toast(ok, err)
+
+    def _end_eat_animated(self, ok: int, err: int) -> None:
+        self._set_state("idle")
+        self._show_ingest_toast(ok, err)
+
+    def _show_ingest_toast(self, ok: int, err: int) -> None:
+        """Cartoon card toast above the pet, auto-dismiss after 5 s."""
+        bw, bh = 260, 90
+        rx, ry = self.root.winfo_x(), self.root.winfo_y()
+        bx = max(0, rx + self.window_w // 2 - bw // 2)
+        by = max(0, ry - bh - 16)
+
+        toast = tk.Toplevel(self.root)
+        toast.overrideredirect(True)
+        toast.attributes("-topmost", True)
+        toast.config(bg=TRANSPARENT)
+        toast.wm_attributes("-transparentcolor", TRANSPARENT)
+        toast.geometry(f"{bw}x{bh}+{bx}+{by}")
+
+        # ── PIL card with drop shadow (same style as panels) ────────────────
+        card = _shared_card_png(bw, bh, 16, "#fffdf5", "#e6c85c", "#e6c85c", 5)
+        self._toast_bg_img = ImageTk.PhotoImage(card)
+
+        cv = tk.Canvas(
+            toast, width=bw, height=bh,
+            bg=TRANSPARENT, highlightthickness=0, borderwidth=0,
+        )
+        cv.pack()
+        cv.create_image(0, 0, image=self._toast_bg_img, anchor="nw")
+
+        cv.create_text(
+            bw // 2, 28, text="Wiki 更新完成",
+            fill=TEXT_MAIN, font=("Microsoft YaHei", 11, "bold"),
+        )
+
+        status = f"ok: {ok} 成功" + (f", {err} 失败" if err else "")
+        cv.create_text(
+            bw // 2, 56, text=status,
+            fill=TEXT_LIGHT, font=("Microsoft YaHei", 9),
+        )
+
+        def _dismiss():
+            try:
+                toast.destroy()
+            except tk.TclError:
+                pass
+        toast.bind("<Button-1>", lambda _e: _dismiss())
+        self.root.after(5000, _dismiss)
+
+    # ══ end ingest feedback ════════════════════════════════════════════════
 
 
 def _parse_dnd_files(data: str) -> list[str]:
