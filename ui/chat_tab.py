@@ -5,7 +5,7 @@ import tkinter as tk
 from pathlib import Path
 
 from llm.client import LLMConfig
-from llm.wiki_engine import query_wiki
+from llm.wiki_engine import QueryResultMeta, query_wiki, save_query_answer_as_wiki_page
 from ui.cartoon_widgets import (
     WHITE, SKY_LIGHT, SKY_DARK, TEXT_MAIN, TEXT_LIGHT,
     FONT_BODY, FONT_HINT,
@@ -22,6 +22,9 @@ class ChatTab:
         self._edge = edge_color
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._streaming = False
+        self._last_question = ""
+        self._last_answer_chunks: list[str] = []
+        self._last_meta: QueryResultMeta | None = None
         self._build()
 
     def _build(self) -> None:
@@ -38,6 +41,11 @@ class ChatTab:
             header, "📖", command=self._open_reader,
             kind="orange", width=44, height=30,
         ).grid(row=0, column=1, sticky="e")
+        self.save_btn = CartoonButton(
+            header, "💾", command=self._save_last_answer,
+            kind="orange", width=44, height=30,
+        )
+        self.save_btn.grid(row=0, column=2, sticky="e", padx=(4, 0))
 
         # Chat history
         hist_border = tk.Frame(self.frame, bg=self._edge)
@@ -115,6 +123,9 @@ class ChatTab:
 
         self._append_text("Assistant: ", "assistant_name")
         self._streaming = True
+        self._last_question = question
+        self._last_answer_chunks = []
+        self._last_meta = None
 
         llm_config = LLMConfig(
             api_base=app_config.LLM_API_BASE,
@@ -131,7 +142,10 @@ class ChatTab:
 
     def _stream_worker(self, question: str, config: LLMConfig) -> None:
         try:
-            for chunk in query_wiki(question, config):
+            def _on_meta(meta: QueryResultMeta) -> None:
+                self._last_meta = meta
+
+            for chunk in query_wiki(question, config, on_meta=_on_meta):
                 self._queue.put(chunk)
         except Exception as exc:
             self._queue.put(f"\n[Error: {exc}]")
@@ -145,10 +159,32 @@ class ChatTab:
                     self._append_text("\n\n")
                     self._streaming = False
                     return
+                self._last_answer_chunks.append(item)
                 self._append_text(item)
         except queue.Empty:
             pass
         self.frame.after(50, self._poll_queue)
+
+    def _save_last_answer(self) -> None:
+        if self._streaming or not self._last_question or not self._last_answer_chunks:
+            return
+        meta = self._last_meta
+        used_pages = meta.used_pages if meta else []
+        raw_sources = meta.raw_sources if meta else []
+        answer_type = meta.answer_type if meta else "direct_answer"
+        answer = "".join(self._last_answer_chunks).strip()
+        try:
+            path = save_query_answer_as_wiki_page(
+                self._last_question,
+                answer,
+                used_pages,
+                answer_type=answer_type,
+                raw_sources=raw_sources,
+            )
+        except Exception as exc:
+            self._append_text(f"[保存失败: {exc}]\n\n", "error")
+            return
+        self._append_text(f"[已保存到 {path}]\n\n", "meta")
 
     def _open_reader(self) -> None:
         text = self.history.get("1.0", tk.END).strip()

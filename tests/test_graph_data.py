@@ -28,8 +28,8 @@ def mini_wiki(tmp_path: Path) -> Path:
     (w / "sources" / "summary_a.md").write_text(
         "# Note A\n\nContent.\n\n"
         "## Related\n\n"
-        "- [OpenAI](entities/openai.md)\n"
-        "- [ML](concepts/ml.md)\n",
+        "- [OpenAI](../entities/openai.md)\n"
+        "- [ML](../concepts/ml.md)\n",
         encoding="utf-8",
     )
 
@@ -99,8 +99,8 @@ def test_parse_wiki_graph_entity_related_edges(mini_wiki):
     """Entity pages with ## Related produce edges in the graph."""
     (mini_wiki / "entities" / "openai.md").write_text(
         "# OpenAI\n\nAI lab.\n\n## Related\n\n"
-        "- [ML](concepts/ml.md)\n"
-        "- [DeepSeek](entities/deepseek.md)\n",
+        "- [ML](../concepts/ml.md)\n"
+        "- [DeepSeek](deepseek.md)\n",
         encoding="utf-8",
     )
     g = parse_wiki_graph(mini_wiki)
