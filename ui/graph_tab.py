@@ -5,15 +5,14 @@ import tkinter as tk
 from pathlib import Path
 
 from llm.graph_data import parse_wiki_graph, Graph, Node as GNode, Edge as GEdge
+from ui.cartoon_widgets import TEXT_MAIN, TEXT_LIGHT
 
 # ── constants ────────────────────────────────────────────────────────────
 
 DEFAULT_W, DEFAULT_H = 860, 580
 MIN_W, MIN_H = 480, 340
-BG = "#fafbff"
+BG = "#FAFAFE"
 TRANSPARENT = "#ff00ff"
-TEXT_MAIN = "#2c3e50"
-TEXT_LIGHT = "#6b7c8f"
 
 CHROME_H = 38        # title-bar height
 GRIP = 28  # resize-edge sensitivity (px)
@@ -21,21 +20,21 @@ GRIP = 28  # resize-edge sensitivity (px)
 NODE_R_BASE = {"source": 7, "entity": 6, "concept": 5}
 NODE_R_MAX  = {"source": 20, "entity": 16, "concept": 13}
 NODE_FILL_LOW = {
-    "source":  "#d8effa",
-    "entity":  "#d0f5e9",
-    "concept": "#fff2d0",
+    "source":  "#EDE9FE",  # purple-100
+    "entity":  "#ECFDF5",  # emerald-50
+    "concept": "#FFFBEB",  # amber-50
 }
 NODE_FILL_HIGH = {
-    "source":  "#4a9ed4",
-    "entity":  "#1d9e6e",
-    "concept": "#d49820",
+    "source":  "#7C3AED",  # purple-600
+    "entity":  "#10B981",  # emerald-500
+    "concept": "#F59E0B",  # amber-500
 }
 NODE_EDGE_HIGH = {
-    "source":  "#3a80b0",
-    "entity":  "#157a54",
-    "concept": "#b07818",
+    "source":  "#6D28D9",  # purple-700
+    "entity":  "#059669",  # emerald-600
+    "concept": "#D97706",  # amber-600
 }
-LINK_COLOR = "#d0d8e8"
+LINK_COLOR = "#E5E7EB"
 FONT_NODE = ("Microsoft YaHei", 7)
 FONT_TITLE = ("Microsoft YaHei", 10, "bold")
 NODE_CLICK_THRESHOLD = 5  # px — distinguishes click from drag
@@ -471,9 +470,9 @@ class _GraphWindow:
     def _draw_chrome(self) -> None:
         c = self._canvas
         # Title-bar background
-        c.create_rectangle(0, 0, self.w, CHROME_H, fill="#f0ecff", outline="")
+        c.create_rectangle(0, 0, self.w, CHROME_H, fill="#F5F3FF", outline="")
         # Bottom separator
-        c.create_line(0, CHROME_H, self.w, CHROME_H, fill="#d4b8f0", width=1)
+        c.create_line(0, CHROME_H, self.w, CHROME_H, fill="#E5E7EB", width=1)
 
         # Title
         c.create_text(
@@ -505,11 +504,11 @@ class _GraphWindow:
         for i in range(4):
             lx = grip_x + i * 8
             c.create_line(lx, self.h, self.w, grip_y + i * 8,
-                          fill="#c8c0d8", width=1.5)
+                          fill="#D1D5DB", width=1.5)
         # Window border
         c.create_rectangle(
             0, 0, self.w - 1, self.h - 1,
-            outline="#d4b8f0", width=1,
+            outline="#E5E7EB", width=1,
         )
 
         # ── Top-10 ranking overlay (right side) ──────────────────────────
@@ -520,10 +519,10 @@ class _GraphWindow:
         BTN_W = 28
         btns = []
         # close, maximize, minimize, refresh — right-to-left
-        labels = [("✕", "#fdf2f2", "#f0c0c0"),   # close
-                  ("🗖", "#f0ecff", "#c0a8e0"),   # maximize
-                  ("🗕", "#f0ecff", "#c0a8e0"),   # minimize
-                  ("🔄", "#e8dcf8", "#c0a8e0")]   # refresh
+        labels = [("✕", "#FFF1F2", "#FECDD3"),   # close (rose)
+                  ("🗖", "#F5F3FF", "#C4B5FD"),   # maximize (purple)
+                  ("🗕", "#F5F3FF", "#C4B5FD"),   # minimize (purple)
+                  ("🔄", "#F5F3FF", "#C4B5FD")]   # refresh (purple)
         x2 = self.w - 8
         for text, bg_c, ol_c in labels:
             x1 = x2 - BTN_W
@@ -574,7 +573,7 @@ class _GraphWindow:
         c.create_rectangle(
             panel_x - 6, panel_y - 4,
             panel_x + panel_w, panel_y + panel_h,
-            fill="#fefeff", outline="#e8e0f0", width=1,
+            fill="#FAFAFE", outline="#E5E7EB", width=1,
         )
         c.create_text(
             panel_x + panel_w // 2, panel_y + 4,

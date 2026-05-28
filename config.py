@@ -26,6 +26,7 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60"))
 LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "2"))
+LLM_THINKING = os.environ.get("LLM_THINKING", "false").lower() in ("true", "1", "yes")
 
 WIKI_RETRIEVAL_TOP_N = int(os.environ.get("WIKI_RETRIEVAL_TOP_N", "5"))
 WIKI_QUERY_TOP_N = int(os.environ.get("WIKI_QUERY_TOP_N", "6"))

@@ -5,6 +5,7 @@ import re
 import threading
 import time
 import tkinter as tk
+from tkinter import font as tkfont
 from pathlib import Path
 
 import ttkbootstrap as ttk
@@ -20,6 +21,9 @@ from ui.cartoon_widgets import (
     FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT, FONT_INPUT,
     CartoonButton,
     hex_to_rgb as _hex_to_rgb_shared, make_card_png as _shared_card_png,
+    SKY_PRIMARY, SKY_DARK, SKY_LIGHT, SKY_PALE,
+    WHITE, TEXT_MAIN, TEXT_LIGHT, DASH_LINE,
+    MINT, PINK, ORANGE, LAVENDER,
 )
 from ui.input_tab import InputTab
 from ui.upload_tab import UploadTab, SUPPORTED as UPLOAD_HANDLERS
@@ -32,29 +36,14 @@ PET_DIR = ASSETS_DIR
 PET_STATES = ("idle", "attack", "happy", "sleep", "eat")
 TRANSPARENT = "#ff00ff"
 
-# ── Cartoon Sky-Blue palette (lifted from the HTML UI kit) ──────────────────
-SKY_PRIMARY = "#5CB8F0"
-SKY_DARK = "#3a90cc"
-SKY_LIGHT = "#a8d4f4"
-SKY_PALE = "#e0f2ff"
-WHITE = "#ffffff"
-TEXT_MAIN = "#2c3e50"
-TEXT_LIGHT = "#6b7c8f"
-DASH_LINE = "#e0eeff"
-
-MINT = "#5DD5A8"
-PINK = "#F07AA0"
-ORANGE = "#FFC94A"
-LAVENDER = "#A080F0"
-
 # Per-action: label, emoji, tab_class, hint, btn body, btn shadow, panel pale-bg, panel edge
 ACTIONS = [
-    ("输入", "📖", InputTab,  "Ctrl+1", SKY_PRIMARY, SKY_DARK,  "#e8f4ff", "#a8d4f4"),
-    ("上传", "📁", UploadTab, "Ctrl+2", MINT,        "#3db88a", "#ebfaf3", "#a8eedd"),
-    ("搜索", "🔍", SearchTab, "Ctrl+3", LAVENDER,    "#7a5acc", "#f3eefc", "#d8cefa"),
-    ("问答", "💬", ChatTab,   "Ctrl+4", ORANGE,      "#dba42a", "#fff8e0", "#ffe4a8"),
-    ("图谱", "🕸️", GraphTab,  "Ctrl+5", "#9b59b6",   "#7d3c98", "#f5eeff", "#d4b8f0"),
-    ("体检", "🩺", LintTab,  "Ctrl+6", "#e74c3c",   "#c0392b", "#fff0f0", "#f0c0c0"),
+    ("输入", "📖", InputTab,  "Ctrl+1", "#7C3AED", "#6D28D9", "#F5F3FF", "#DDD6FE"),
+    ("上传", "📁", UploadTab, "Ctrl+2", "#10B981", "#059669", "#ECFDF5", "#A7F3D0"),
+    ("搜索", "🔍", SearchTab, "Ctrl+3", "#8B5CF6", "#7C3AED", "#F5F3FF", "#C4B5FD"),
+    ("问答", "💬", ChatTab,   "Ctrl+4", "#F59E0B", "#D97706", "#FFFBEB", "#FDE68A"),
+    ("图谱", "🕸️", GraphTab,  "Ctrl+5", "#6366F1", "#4F46E5", "#EEF2FF", "#C7D2FE"),
+    ("体检", "🩺", LintTab,  "Ctrl+6", "#F43F5E", "#E11D48", "#FFF1F2", "#FECDD3"),
 ]
 
 # Pet behaviour
@@ -68,18 +57,22 @@ TICK_MS = 33
 # Sidebar geometry (matches HTML sidebar-toolbar)
 BTN_SIZE = 50
 BTN_GAP = 10
-BTN_RADIUS = 16
-BTN_SHADOW = 4
+BTN_RADIUS = 12
+BTN_SHADOW = 2
 SIDEBAR_PAD = 12
-SIDEBAR_RADIUS = 22
-SIDEBAR_SHADOW = 5
+SIDEBAR_RADIUS = 18
+SIDEBAR_SHADOW = 3
 
 # Panel geometry
 PANEL_W, PANEL_H = 520, 680
-PANEL_RADIUS = 26
-PANEL_SHADOW = 6
+PANEL_RADIUS = 20
+PANEL_SHADOW = 4
 PANEL_TITLE_H = 52
-PANEL_BODY_PAD = 16
+PANEL_BODY_PAD = 20
+PANEL_GRIP = 24          # resize-edge sensitivity (px)
+PANEL_MIN_W = 380
+PANEL_MIN_H = 320
+PANEL_RESIZE_DEBOUNCE_MS = 100
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -431,6 +424,13 @@ class MainWindow:
         self._graph_win: _GraphWindow | None = None
         self._panel_pinned = False
 
+        # ── panel resize state ─────────────────────────────────────────────
+        self._panel_w = PANEL_W
+        self._panel_h = PANEL_H
+        self._panel_resize_edge = ""
+        self._panel_drag_origin = (0, 0)
+        self._panel_resize_after = None
+
         self.canvas.bind("<Enter>", self._on_activity_enter)
         self.canvas.bind("<Leave>", self._maybe_hide)
         self.canvas.bind("<Motion>", lambda _e: self._kick_activity())
@@ -671,105 +671,61 @@ class MainWindow:
         if tab_cls is ChatTab:
             pinned = True
 
+        # Reset panel dimensions for each new panel
+        self._panel_w = PANEL_W
+        self._panel_h = PANEL_H
+
         panel = tk.Toplevel(self.root)
         panel.overrideredirect(True)
         panel.attributes("-topmost", True)
         panel.config(bg=TRANSPARENT)
         panel.wm_attributes("-transparentcolor", TRANSPARENT)
-        panel.geometry(f"{PANEL_W}x{PANEL_H}")
+        panel.geometry(f"{self._panel_w}x{self._panel_h}")
 
         # PIL background = pale themed body + matching edge + bottom shadow
         bg_pil = _make_card_png(
-            PANEL_W, PANEL_H, PANEL_RADIUS,
+            self._panel_w, self._panel_h, PANEL_RADIUS,
             pale_bg, edge_color, edge_color, PANEL_SHADOW,
         )
         self._panel_bg = ImageTk.PhotoImage(bg_pil)
 
         bg_canvas = tk.Canvas(
-            panel, width=PANEL_W, height=PANEL_H,
+            panel, width=self._panel_w, height=self._panel_h,
             bg=TRANSPARENT, highlightthickness=0, borderwidth=0,
         )
-        bg_canvas.place(x=0, y=0, width=PANEL_W, height=PANEL_H)
+        bg_canvas.place(x=0, y=0, width=self._panel_w, height=self._panel_h)
         bg_canvas.create_image(0, 0, anchor="nw", image=self._panel_bg)
 
-        # ── Title bar ───────────────────────────────────────────────────────
-        from tkinter import font as tkfont
-        # Render emoji + title separately (the cartoon Chinese font 华文琥珀
-        # doesn't carry emoji glyphs).
-        title_x = PANEL_BODY_PAD + 4
-        cy = PANEL_TITLE_H // 2
-        f_emoji = tkfont.Font(font=("Segoe UI Emoji", FONT_TITLE[1]))
-        f_title = tkfont.Font(font=FONT_TITLE)
-        bg_canvas.create_text(
-            title_x, cy, text=emoji, anchor="w",
-            fill=TEXT_MAIN, font=("Segoe UI Emoji", FONT_TITLE[1]),
-        )
-        text_x = title_x + f_emoji.measure(emoji) + 8
-        bg_canvas.create_text(
-            text_x, cy, text=label, anchor="w",
-            fill=TEXT_MAIN, font=FONT_TITLE,
-        )
+        # ── Title bar + close button + separator ─────────────────────────────
+        chrome = self._draw_panel_chrome(bg_canvas, self._panel_w, label, emoji, hint)
 
-        # Shortcut hint pill — placed RIGHT after the actual title width
-        hint_pill_w = 64
-        hint_x = text_x + f_title.measure(label) + 14
-        bg_canvas.create_polygon(
-            _round_rect_points(hint_x, cy - 11, hint_x + hint_pill_w, cy + 11, 10),
-            smooth=True, fill=SKY_PALE, outline=SKY_LIGHT, width=2,
-        )
-        bg_canvas.create_text(
-            hint_x + hint_pill_w // 2, cy, text=hint,
-            fill=SKY_DARK, font=FONT_SHORTCUT,
-        )
+        # Store references for resize handlers
+        panel._bg_canvas = bg_canvas
+        panel._close_body_id = chrome.close_body_id
+        panel._close_x_id = chrome.close_x_id
+        panel._close_cx1, panel._close_cx2 = chrome.cx1, chrome.cx2
+        panel._close_cy1, panel._close_cy2 = chrome.cy1, chrome.cy2
+        panel._pale_bg = pale_bg
+        panel._edge_color = edge_color
+        panel._label = label
+        panel._emoji = emoji
+        panel._hint = hint
 
-        # Close button (cartoon style: light grey rounded square, hover red)
-        cx2 = PANEL_W - PANEL_BODY_PAD - 4
-        cx1 = cx2 - 26
-        cy1 = (PANEL_TITLE_H - 26) // 2
-        cy2 = cy1 + 26
-        close_body_id = bg_canvas.create_polygon(
-            _round_rect_points(cx1, cy1, cx2, cy2, 10),
-            smooth=True, fill="#f7fbff", outline="#dddddd", width=2,
-        )
-        close_x_id = bg_canvas.create_text(
-            (cx1 + cx2) // 2, (cy1 + cy2) // 2,
-            text="✕", fill=TEXT_LIGHT, font=FONT_BODY_BOLD,
-        )
-
-        def _close_hit(x, y):
-            return cx1 <= x <= cx2 and cy1 <= y <= cy2
-
-        def _on_canvas_motion(e):
-            if _close_hit(e.x, e.y):
-                bg_canvas.itemconfig(close_body_id, fill="#feecec", outline=PINK)
-                bg_canvas.itemconfig(close_x_id, fill=PINK)
-                bg_canvas.config(cursor="hand2")
-            else:
-                bg_canvas.itemconfig(close_body_id, fill="#f7fbff", outline="#dddddd")
-                bg_canvas.itemconfig(close_x_id, fill=TEXT_LIGHT)
-                bg_canvas.config(cursor="arrow")
-
-        def _on_canvas_click(e):
-            if _close_hit(e.x, e.y):
-                self._close_panel()
-
-        bg_canvas.bind("<Motion>", _on_canvas_motion)
-        bg_canvas.bind("<Button-1>", _on_canvas_click)
-
-        # ── Dashed separator under title ────────────────────────────────────
-        _draw_dashed_line(
-            bg_canvas, PANEL_BODY_PAD, PANEL_TITLE_H,
-            PANEL_W - PANEL_BODY_PAD, PANEL_TITLE_H, DASH_LINE,
-        )
+        bg_canvas.bind("<Motion>", self._on_panel_motion)
+        bg_canvas.bind("<Button-1>", self._on_panel_click)
+        bg_canvas.bind("<B1-Motion>", self._on_panel_drag)
+        bg_canvas.bind("<ButtonRelease-1>", self._on_panel_release)
 
         # ── Content area ────────────────────────────────────────────────────
         content_top = PANEL_TITLE_H + 8
         content = tk.Frame(panel, bg=pale_bg)
         content.place(
             x=PANEL_BODY_PAD, y=content_top,
-            width=PANEL_W - PANEL_BODY_PAD * 2,
-            height=PANEL_H - content_top - PANEL_SHADOW - PANEL_BODY_PAD,
+            width=self._panel_w - PANEL_BODY_PAD * 2,
+            height=self._panel_h - content_top - PANEL_SHADOW - PANEL_BODY_PAD,
         )
+        panel._content = content
+        panel._content_top = content_top
 
         if tab_cls in (InputTab, UploadTab):
             tab = tab_cls(content, bg_color=pale_bg, edge_color=edge_color, main=self)
@@ -788,23 +744,221 @@ class MainWindow:
             return
         sprite_left_x = self._px + SPRITE_PAD_X
         sidebar_w = self._sidebar.W if self._sidebar else (SIDEBAR_PAD * 2 + BTN_SIZE)
-        x = sprite_left_x - sidebar_w - 8 - PANEL_W - 6
+        x = sprite_left_x - sidebar_w - 8 - self._panel_w - 6
         pet_center_y = self._py + SPRITE_PAD_Y + self.pet_h // 2
-        y = pet_center_y - PANEL_H // 2
+        y = pet_center_y - self._panel_h // 2
         sh = self.root.winfo_screenheight()
-        y = max(0, min(y, sh - PANEL_H))
+        y = max(0, min(y, sh - self._panel_h))
         self._panel.geometry(f"+{x}+{y}")
 
     def _close_panel(self) -> None:
+        if self._panel_resize_after is not None:
+            self.root.after_cancel(self._panel_resize_after)
+            self._panel_resize_after = None
         if self._panel and self._panel.winfo_exists():
             self._panel.destroy()
         self._panel = None
         self._panel_bg = None
         self._active_idx = None
         self._panel_pinned = False
+        self._panel_w = PANEL_W
+        self._panel_h = PANEL_H
+        self._panel_resize_edge = ""
+        self._panel_drag_origin = (0, 0)
 
     def _close_graph(self) -> None:
         self._graph_win = None
+
+    # ── panel chrome drawing ──────────────────────────────────────────────────
+
+    class _PanelChrome:
+        """Stores canvas item IDs for the panel title bar and close button."""
+        __slots__ = ("close_body_id", "close_x_id", "cx1", "cx2", "cy1", "cy2")
+
+        def __init__(self, close_body_id: int, close_x_id: int,
+                     cx1: int, cx2: int, cy1: int, cy2: int) -> None:
+            self.close_body_id = close_body_id
+            self.close_x_id = close_x_id
+            self.cx1, self.cx2 = cx1, cx2
+            self.cy1, self.cy2 = cy1, cy2
+
+    def _draw_panel_chrome(self, canvas: tk.Canvas, w: int,
+                           label: str, emoji: str, hint: str) -> "MainWindow._PanelChrome":
+        """Draw title bar, hint pill, close button, and separator."""
+        # Title text (emoji + label with separate fonts)
+        title_x = PANEL_BODY_PAD + 4
+        cy = PANEL_TITLE_H // 2
+        f_emoji = tkfont.Font(font=("Segoe UI Emoji", FONT_TITLE[1]))
+        f_title = tkfont.Font(font=FONT_TITLE)
+        canvas.create_text(
+            title_x, cy, text=emoji, anchor="w",
+            fill=TEXT_MAIN, font=("Segoe UI Emoji", FONT_TITLE[1]),
+        )
+        text_x = title_x + f_emoji.measure(emoji) + 8
+        canvas.create_text(
+            text_x, cy, text=label, anchor="w",
+            fill=TEXT_MAIN, font=FONT_TITLE,
+        )
+
+        # Shortcut hint pill
+        hint_pill_w = 64
+        hint_x = text_x + f_title.measure(label) + 14
+        canvas.create_polygon(
+            _round_rect_points(hint_x, cy - 11, hint_x + hint_pill_w, cy + 11, 10),
+            smooth=True, fill=SKY_PALE, outline=SKY_LIGHT, width=1,
+        )
+        canvas.create_text(
+            hint_x + hint_pill_w // 2, cy, text=hint,
+            fill=SKY_DARK, font=FONT_SHORTCUT,
+        )
+
+        # Close button (24x24, lighter style)
+        cs = 24
+        cx2 = w - PANEL_BODY_PAD - 4
+        cx1 = cx2 - cs
+        cy1 = (PANEL_TITLE_H - cs) // 2
+        cy2 = cy1 + cs
+        close_body_id = canvas.create_polygon(
+            _round_rect_points(cx1, cy1, cx2, cy2, 8),
+            smooth=True, fill="#f7fbff", outline="#dddddd", width=1,
+        )
+        close_x_id = canvas.create_text(
+            (cx1 + cx2) // 2, (cy1 + cy2) // 2,
+            text="✕", fill=TEXT_LIGHT, font=FONT_BODY_BOLD,
+        )
+
+        # Solid separator
+        canvas.create_line(
+            PANEL_BODY_PAD, PANEL_TITLE_H,
+            w - PANEL_BODY_PAD, PANEL_TITLE_H,
+            fill=DASH_LINE, width=1,
+        )
+
+        return self._PanelChrome(close_body_id, close_x_id, cx1, cx2, cy1, cy2)
+
+    # ── panel resize handlers ────────────────────────────────────────────────
+
+    def _panel_close_hit(self, x: int, y: int) -> bool:
+        p = self._panel
+        if not p:
+            return False
+        return (p._close_cx1 <= x <= p._close_cx2 and
+                p._close_cy1 <= y <= p._close_cy2)
+
+    def _on_panel_motion(self, e: tk.Event) -> None:
+        p = self._panel
+        if not p:
+            return
+        canvas = p._bg_canvas
+
+        # Close button hover takes priority over resize grip
+        if self._panel_close_hit(e.x, e.y):
+            canvas.itemconfig(p._close_body_id, fill="#feecec", outline=PINK)
+            canvas.itemconfig(p._close_x_id, fill=PINK)
+            canvas.config(cursor="hand2")
+            return
+
+        # Reset close button appearance
+        canvas.itemconfig(p._close_body_id, fill="#f7fbff", outline="#dddddd")
+        canvas.itemconfig(p._close_x_id, fill=TEXT_LIGHT)
+
+        # Resize grip cursor
+        on_right = e.x >= self._panel_w - PANEL_GRIP
+        on_bottom = e.y >= self._panel_h - PANEL_GRIP
+        if on_right and on_bottom:
+            canvas.config(cursor="bottom_right_corner")
+        elif on_right:
+            canvas.config(cursor="sb_h_double_arrow")
+        elif on_bottom:
+            canvas.config(cursor="sb_v_double_arrow")
+        else:
+            canvas.config(cursor="arrow")
+
+    def _on_panel_click(self, e: tk.Event) -> None:
+        p = self._panel
+        if not p:
+            return
+        # Close button takes priority over resize grip
+        if self._panel_close_hit(e.x, e.y):
+            self._close_panel()
+            return
+        on_right = e.x >= self._panel_w - PANEL_GRIP
+        on_bottom = e.y >= self._panel_h - PANEL_GRIP
+        if on_right or on_bottom:
+            self._panel_resize_edge = (
+                ("right" if on_right else "") + ("bottom" if on_bottom else "")
+            )
+            self._panel_drag_origin = (e.x_root, e.y_root)
+
+    def _on_panel_drag(self, e: tk.Event) -> None:
+        if not self._panel_resize_edge:
+            return
+        dx = e.x_root - self._panel_drag_origin[0]
+        dy = e.y_root - self._panel_drag_origin[1]
+        nw = self._panel_w + (dx if "right" in self._panel_resize_edge else 0)
+        nh = self._panel_h + (dy if "bottom" in self._panel_resize_edge else 0)
+        nw = max(PANEL_MIN_W, nw)
+        nh = max(PANEL_MIN_H, nh)
+        # Clamp to screen bounds
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        nw = min(nw, sw - self._panel.winfo_x())
+        nh = min(nh, sh - self._panel.winfo_y())
+        if nw == self._panel_w and nh == self._panel_h:
+            return
+        self._panel_w, self._panel_h = nw, nh
+        self._panel.geometry(f"{nw}x{nh}")
+        p = self._panel
+        p._bg_canvas.place(width=nw, height=nh)
+        p._bg_canvas.config(width=nw, height=nh)
+        self._update_panel_content()
+        self._panel_drag_origin = (e.x_root, e.y_root)
+
+    def _on_panel_release(self, _e: tk.Event) -> None:
+        if not self._panel_resize_edge:
+            return
+        self._panel_resize_edge = ""
+        # Debounce PIL background regeneration
+        if self._panel_resize_after is not None:
+            self.root.after_cancel(self._panel_resize_after)
+        self._panel_resize_after = self.root.after(
+            PANEL_RESIZE_DEBOUNCE_MS, self._refresh_panel_bg,
+        )
+
+    def _update_panel_content(self) -> None:
+        p = self._panel
+        if not p:
+            return
+        p._content.place(
+            width=self._panel_w - PANEL_BODY_PAD * 2,
+            height=self._panel_h - p._content_top - PANEL_SHADOW - PANEL_BODY_PAD,
+        )
+
+    def _refresh_panel_bg(self) -> None:
+        self._panel_resize_after = None
+        p = self._panel
+        if not p or not p.winfo_exists():
+            return
+        canvas = p._bg_canvas
+        w, h = self._panel_w, self._panel_h
+
+        # Regenerate PIL background
+        bg_pil = _make_card_png(
+            w, h, PANEL_RADIUS,
+            p._pale_bg, p._edge_color, p._edge_color, PANEL_SHADOW,
+        )
+        self._panel_bg = ImageTk.PhotoImage(bg_pil)
+
+        # Clear and redraw canvas
+        canvas.delete("all")
+        canvas.create_image(0, 0, anchor="nw", image=self._panel_bg)
+
+        # Redraw title bar, close button, separator
+        chrome = self._draw_panel_chrome(canvas, w, p._label, p._emoji, p._hint)
+        p._close_body_id = chrome.close_body_id
+        p._close_x_id = chrome.close_x_id
+        p._close_cx1, p._close_cx2 = chrome.cx1, chrome.cx2
+        p._close_cy1, p._close_cy2 = chrome.cy1, chrome.cy2
 
     def _open_reader(self, path: Path) -> None:
         """Open a wiki page in a reader window (reuse if compatible)."""
@@ -876,6 +1030,7 @@ class MainWindow:
             api_base=_cfg.LLM_API_BASE,
             api_key=_cfg.LLM_API_KEY,
             model=_cfg.LLM_MODEL,
+            thinking=_cfg.LLM_THINKING,
         )
         if not llm_cfg.api_key:
             # No LLM — fall back to silent background ingest.
@@ -917,8 +1072,8 @@ class MainWindow:
                        anchor="w", fill=TEXT_MAIN, font=FONT_HEADING)
         close_x = pw - 24
         cv.create_text(close_x, 22, text="✕", fill=TEXT_LIGHT,
-                       font=("Microsoft YaHei", 12, "bold"))
-        cv.create_line(16, 44, pw - 16, 44, fill="#e8e0f0", width=1)
+                       font=FONT_BODY_BOLD)
+        cv.create_line(16, 44, pw - 16, 44, fill=DASH_LINE, width=1)
 
         # Text widget for LLM streaming output
         text_frame = tk.Frame(panel, bg="#ffffff")
@@ -942,6 +1097,9 @@ class MainWindow:
                 panel.destroy()
             except tk.TclError:
                 pass
+            self._ingest_chat_dismiss = None
+
+        self._ingest_chat_dismiss = _dismiss
 
         def _on_close():
             user_q.put("__CANCEL__")
@@ -1049,6 +1207,8 @@ class MainWindow:
 
     def _finish_ingest(self, ok: int, err: int) -> None:
         self._set_state("idle")
+        if self._ingest_chat_dismiss:
+            self._ingest_chat_dismiss()
         self._show_ingest_toast(ok, err)
 
     def _end_eat_animated(self, ok: int, err: int) -> None:
@@ -1082,13 +1242,13 @@ class MainWindow:
 
         cv.create_text(
             bw // 2, 28, text="Wiki 更新完成",
-            fill=TEXT_MAIN, font=("Microsoft YaHei", 11, "bold"),
+            fill=TEXT_MAIN, font=FONT_HEADING,
         )
 
         status = f"ok: {ok} 成功" + (f", {err} 失败" if err else "")
         cv.create_text(
             bw // 2, 56, text=status,
-            fill=TEXT_LIGHT, font=("Microsoft YaHei", 9),
+            fill=TEXT_LIGHT, font=FONT_HINT,
         )
 
         def _dismiss():

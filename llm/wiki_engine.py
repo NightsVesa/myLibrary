@@ -1606,6 +1606,7 @@ def query_wiki(
     wiki_dir: Path | None = None,
     notes_dir: Path | None = None,
     on_meta: Callable[[QueryResultMeta], None] | None = None,
+    on_thinking: Callable[[str], None] | None = None,
 ) -> Generator[str, None, None]:
     wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
 
@@ -1666,7 +1667,7 @@ def query_wiki(
         ),
     ]
     try:
-        yield from chat_stream(config, messages)
+        yield from chat_stream(config, messages, on_thinking=on_thinking)
     finally:
         _append_query_log(wiki, question, used_pages, raw_sources)
 
@@ -1678,6 +1679,7 @@ def background_ingest(note_path: Path) -> None:
         api_base=app_config.LLM_API_BASE,
         api_key=app_config.LLM_API_KEY,
         model=app_config.LLM_MODEL,
+        thinking=app_config.LLM_THINKING,
     )
 
     def _worker():

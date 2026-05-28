@@ -8,7 +8,7 @@ from llm.client import LLMConfig
 from llm.wiki_engine import QueryResultMeta, query_wiki, save_query_answer_as_wiki_page
 from ui.cartoon_widgets import (
     WHITE, SKY_LIGHT, SKY_DARK, TEXT_MAIN, TEXT_LIGHT,
-    FONT_BODY, FONT_HINT,
+    FONT_BODY, FONT_BODY_BOLD, FONT_HINT,
     cartoon_label, cartoon_entry, CartoonButton,
 )
 import config as app_config
@@ -20,7 +20,7 @@ class ChatTab:
         self.frame = tk.Frame(parent, bg=bg_color)
         self._bg = bg_color
         self._edge = edge_color
-        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._queue: queue.Queue[str | None | tuple] = queue.Queue()
         self._streaming = False
         self._last_question = ""
         self._last_answer_chunks: list[str] = []
@@ -66,13 +66,15 @@ class ChatTab:
         hist_scroll.pack(side="right", fill="y")
 
         self.history.tag_config("user_name", foreground=SKY_DARK,
-                                font=("幼圆", 10, "bold"))
-        self.history.tag_config("assistant_name", foreground="#e88a3a",
-                                font=("幼圆", 10, "bold"))
-        self.history.tag_config("error", foreground="#cc4444",
-                                font=("幼圆", 10, "italic"))
+                                font=FONT_BODY_BOLD)
+        self.history.tag_config("assistant_name", foreground="#D97706",
+                                font=FONT_BODY_BOLD)
+        self.history.tag_config("error", foreground="#E11D48",
+                                font=FONT_BODY_BOLD)
         self.history.tag_config("meta", foreground=TEXT_LIGHT,
-                                font=("幼圆", 9))
+                                font=FONT_HINT)
+        self.history.tag_config("thinking", foreground="#8B5CF6",
+                                font=FONT_HINT)
 
         # Input row
         input_row = tk.Frame(self.frame, bg=self._bg)
@@ -131,6 +133,7 @@ class ChatTab:
             api_base=app_config.LLM_API_BASE,
             api_key=app_config.LLM_API_KEY,
             model=app_config.LLM_MODEL,
+            thinking=app_config.LLM_THINKING,
         )
         thread = threading.Thread(
             target=self._stream_worker,
@@ -145,7 +148,12 @@ class ChatTab:
             def _on_meta(meta: QueryResultMeta) -> None:
                 self._last_meta = meta
 
-            for chunk in query_wiki(question, config, on_meta=_on_meta):
+            def _on_thinking(text: str) -> None:
+                self._queue.put(("think", text))
+
+            for chunk in query_wiki(
+                question, config, on_meta=_on_meta, on_thinking=_on_thinking,
+            ):
                 self._queue.put(chunk)
         except Exception as exc:
             self._queue.put(f"\n[Error: {exc}]")
@@ -159,8 +167,11 @@ class ChatTab:
                     self._append_text("\n\n")
                     self._streaming = False
                     return
-                self._last_answer_chunks.append(item)
-                self._append_text(item)
+                if isinstance(item, tuple) and item[0] == "think":
+                    self._append_text(item[1], "thinking")
+                else:
+                    self._last_answer_chunks.append(item)
+                    self._append_text(item)
         except queue.Empty:
             pass
         self.frame.after(50, self._poll_queue)

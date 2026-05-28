@@ -74,6 +74,7 @@ class LintTab:
                 api_base=_cfg.LLM_API_BASE,
                 api_key=_cfg.LLM_API_KEY,
                 model=_cfg.LLM_MODEL,
+                thinking=_cfg.LLM_THINKING,
             )
             try:
                 for finding in lint_wiki(_cfg.WIKI_DIR, cfg):

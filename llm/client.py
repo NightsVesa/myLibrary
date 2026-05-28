@@ -12,6 +12,7 @@ class LLMConfig:
     api_base: str
     api_key: str
     model: str
+    thinking: bool = False
 
 
 @dataclass(frozen=True)
@@ -36,14 +37,20 @@ def _headers(config: LLMConfig) -> dict[str, str]:
 
 
 def _body(config: LLMConfig, messages: list[Message], *, stream: bool) -> dict:
-    return {
+    body: dict = {
         "model": config.model,
         "messages": [{"role": m.role, "content": m.content} for m in messages],
         "stream": stream,
     }
+    if config.thinking:
+        body["enable_thinking"] = True
+    return body
 
 
-def chat(config: LLMConfig, messages: list[Message]) -> str:
+def chat(
+    config: LLMConfig, messages: list[Message],
+    *, on_thinking: "callable[[str], None] | None" = None,
+) -> str:
     _validate(config)
     last_exc: Exception | None = None
     for attempt in range(_cfg.LLM_MAX_RETRIES + 1):
@@ -58,7 +65,12 @@ def chat(config: LLMConfig, messages: list[Message]) -> str:
                 time.sleep(2 ** attempt)
                 continue
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            msg = resp.json()["choices"][0]["message"]
+            if on_thinking:
+                reasoning = msg.get("reasoning_content", "")
+                if reasoning:
+                    on_thinking(reasoning)
+            return msg["content"]
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             last_exc = exc
             if attempt < _cfg.LLM_MAX_RETRIES:
@@ -70,6 +82,7 @@ def chat(config: LLMConfig, messages: list[Message]) -> str:
 
 def chat_stream(
     config: LLMConfig, messages: list[Message],
+    *, on_thinking: "callable[[str], None] | None" = None,
 ) -> Generator[str, None, None]:
     _validate(config)
     import json
@@ -96,6 +109,10 @@ def chat_stream(
                     if not choices:
                         continue
                     delta = choices[0].get("delta", {})
+                    if on_thinking:
+                        reasoning = delta.get("reasoning_content", "")
+                        if reasoning:
+                            on_thinking(reasoning)
                     text = delta.get("content", "")
                     if text:
                         yield text

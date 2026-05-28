@@ -746,7 +746,7 @@ def test_discuss_and_ingest_shows_candidates(notes_dir, config):
     chat_q_out = queue.Queue()
     user_q_in = queue.Queue()
 
-    def fake_stream(_cfg, messages):
+    def fake_stream(_cfg, messages, **_kw):
         yield "Looks good. [READY_TO_INGEST]"
 
     candidate_json = (
@@ -811,7 +811,7 @@ def test_discuss_and_ingest_cancel_at_candidates(notes_dir, config):
     chat_q_out = queue.Queue()
     user_q_in = queue.Queue()
 
-    def fake_stream(_cfg, messages):
+    def fake_stream(_cfg, messages, **_kw):
         yield "Ready. [READY_TO_INGEST]"
 
     with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
@@ -848,7 +848,7 @@ def test_discuss_and_ingest_chat_history_in_candidate_prompt(notes_dir, config):
     user_q_in = queue.Queue()
     stream_call = [0]
 
-    def fake_stream(_cfg, messages):
+    def fake_stream(_cfg, messages, **_kw):
         stream_call[0] += 1
         if stream_call[0] == 1:
             yield "I see OpenAI and DeepSeek. Which interests you more?"
@@ -1503,7 +1503,7 @@ def test_query_wiki_uses_index_first_context(wiki_dir, config):
     (wiki_dir / "entities" / "openai.md").write_text("# OpenAI\n\nBuilds AI.", encoding="utf-8")
     seen = {}
 
-    def fake_stream(_cfg, messages):
+    def fake_stream(_cfg, messages, **_kw):
         seen["user"] = messages[1].content
         yield "answer"
 
@@ -1523,7 +1523,7 @@ def test_query_wiki_raw_source_only_on_trigger(wiki_dir, notes_dir, config):
     (notes_dir / "ai.md").write_text("Raw source detail.", encoding="utf-8")
     seen = []
 
-    def fake_stream(_cfg, messages):
+    def fake_stream(_cfg, messages, **_kw):
         seen.append(messages[1].content)
         yield "answer"
 
@@ -1769,7 +1769,7 @@ def test_discuss_and_ingest_ready_flow(notes_dir, config):
     chat_q = queue.Queue()
     user_q = queue.Queue()
 
-    def fake_stream(_cfg, messages):
+    def fake_stream(_cfg, messages, **_kw):
         yield "I found: OpenAI. [READY_TO_INGEST]"
 
     candidate_json = (

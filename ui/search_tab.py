@@ -4,9 +4,9 @@ from pathlib import Path
 from search.grep_search import search_notes
 from ui.cartoon_widgets import (
     WHITE, SKY_LIGHT, SKY_DARK, SKY_PALE, TEXT_MAIN, TEXT_LIGHT,
-    FONT_BODY, FONT_HEADING, FONT_HINT, FONT_TITLE, FONT_MONO,
+    FONT_BODY, FONT_BODY_BOLD, FONT_HEADING, FONT_HINT, FONT_TITLE, FONT_MONO,
     cartoon_label, cartoon_entry, CartoonButton,
-    _round_rect_points,
+    _round_rect_points, PINK,
 )
 from ui.markdown_render import render_markdown_into, highlight_query
 
@@ -17,8 +17,6 @@ READER_SHADOW = 6
 READER_TITLE_H = 76
 READER_PAD = 24
 TRANSPARENT = "#ff00ff"
-BLUSH = "#ff9b9b"
-PINK = "#F07AA0"
 
 
 class SearchTab:
@@ -121,44 +119,44 @@ class SearchTab:
 
         # ── Markdown render tags ───────────────────────────────────────────
         t = self.preview_text
-        t.tag_config("h1", font=("华文琥珀", 16), foreground=SKY_DARK,
+        t.tag_config("h1", font=("Microsoft YaHei", 15, "bold"), foreground=SKY_DARK,
                      spacing1=8, spacing3=4)
-        t.tag_config("h2", font=("华文琥珀", 14), foreground=SKY_DARK,
+        t.tag_config("h2", font=("Microsoft YaHei", 13, "bold"), foreground=SKY_DARK,
                      spacing1=6, spacing3=3)
-        t.tag_config("h3", font=("华文琥珀", 12), foreground=SKY_DARK,
+        t.tag_config("h3", font=("Microsoft YaHei", 12, "bold"), foreground=SKY_DARK,
                      spacing1=4, spacing3=2)
-        t.tag_config("h4", font=("华文琥珀", 11), foreground=SKY_DARK)
-        t.tag_config("h5", font=("华文琥珀", 10), foreground=SKY_DARK)
-        t.tag_config("h6", font=("华文琥珀", 10), foreground=TEXT_LIGHT)
+        t.tag_config("h4", font=("Microsoft YaHei", 11, "bold"), foreground=SKY_DARK)
+        t.tag_config("h5", font=("Microsoft YaHei", 10, "bold"), foreground=SKY_DARK)
+        t.tag_config("h6", font=("Microsoft YaHei", 10, "bold"), foreground=TEXT_LIGHT)
 
-        t.tag_config("bold",        font=("幼圆", 10, "bold"))
-        t.tag_config("italic",      font=("幼圆", 10, "italic"))
-        t.tag_config("bold_italic", font=("幼圆", 10, "bold", "italic"))
+        t.tag_config("bold",        font=FONT_BODY_BOLD)
+        t.tag_config("italic",      font=("Microsoft YaHei", 10, "italic"))
+        t.tag_config("bold_italic", font=("Microsoft YaHei", 10, "bold", "italic"))
 
         t.tag_config("code", font=("Consolas", 10),
-                     background="#f0e8fa", foreground="#5a3a8a")
+                     background="#F5F3FF", foreground="#5B21B6")
         t.tag_config("code_block", font=("Consolas", 9),
-                     background="#f0e8fa", foreground="#3a2a6a",
+                     background="#F5F3FF", foreground="#4C1D95",
                      lmargin1=14, lmargin2=14, spacing1=2, spacing3=2)
 
         t.tag_config("list_bullet", foreground=SKY_DARK,
-                     font=("幼圆", 11, "bold"))
+                     font=FONT_BODY_BOLD)
 
         t.tag_config("blockquote_marker", foreground=SKY_DARK,
-                     font=("幼圆", 11, "bold"))
+                     font=FONT_BODY_BOLD)
         t.tag_config("blockquote", foreground=TEXT_LIGHT,
-                     font=("幼圆", 10, "italic"), lmargin1=4, lmargin2=14)
+                     font=("Microsoft YaHei", 10, "italic"), lmargin1=4, lmargin2=14)
 
         t.tag_config("hr", foreground=SKY_LIGHT, font=("Consolas", 8),
                      spacing1=4, spacing3=4, justify="center")
 
-        t.tag_config("link", foreground="#3a90cc", underline=True)
+        t.tag_config("link", foreground=SKY_DARK, underline=True)
 
         t.tag_config("frontmatter", foreground=TEXT_LIGHT, font=FONT_MONO,
                      lmargin1=4, lmargin2=4)
-        t.tag_config("hit", background="#fff4a3")
+        t.tag_config("hit", background="#FDE68A")
 
-        t.tag_config("filename", font=("华文琥珀", 13), foreground=SKY_DARK)
+        t.tag_config("filename", font=("Microsoft YaHei", 13, "bold"), foreground=SKY_DARK)
         t.tag_config("filepath", foreground=TEXT_LIGHT, font=FONT_MONO,
                      spacing3=8)
 
@@ -275,7 +273,7 @@ class _ReaderWindow:
     MIN_W = 480
     MIN_H = 360
     HANDLE_SIZE = 22
-    DEFAULT_FONT_BODY = ("幼圆", 11)
+    DEFAULT_FONT_BODY = ("Microsoft YaHei", 11)
 
     def __init__(self, root, path, *, query: str, bg_color: str, edge_color: str):
         self.root = root
@@ -343,37 +341,37 @@ class _ReaderWindow:
         scroll.pack(side="right", fill="y")
 
         # markdown tags
-        text.tag_config("h1", font=("华文琥珀", 20), foreground=SKY_DARK,
+        text.tag_config("h1", font=("Microsoft YaHei", 18, "bold"), foreground=SKY_DARK,
                         spacing1=12, spacing3=8)
-        text.tag_config("h2", font=("华文琥珀", 17), foreground=SKY_DARK,
+        text.tag_config("h2", font=("Microsoft YaHei", 15, "bold"), foreground=SKY_DARK,
                         spacing1=10, spacing3=6)
-        text.tag_config("h3", font=("华文琥珀", 14), foreground=SKY_DARK,
+        text.tag_config("h3", font=("Microsoft YaHei", 13, "bold"), foreground=SKY_DARK,
                         spacing1=6, spacing3=4)
-        text.tag_config("h4", font=("华文琥珀", 12), foreground=SKY_DARK)
-        text.tag_config("h5", font=("华文琥珀", 11), foreground=SKY_DARK)
-        text.tag_config("h6", font=("华文琥珀", 11), foreground=TEXT_LIGHT)
-        text.tag_config("bold",        font=("幼圆", 11, "bold"))
-        text.tag_config("italic",      font=("幼圆", 11, "italic"))
-        text.tag_config("bold_italic", font=("幼圆", 11, "bold", "italic"))
+        text.tag_config("h4", font=("Microsoft YaHei", 12, "bold"), foreground=SKY_DARK)
+        text.tag_config("h5", font=("Microsoft YaHei", 11, "bold"), foreground=SKY_DARK)
+        text.tag_config("h6", font=("Microsoft YaHei", 11, "bold"), foreground=TEXT_LIGHT)
+        text.tag_config("bold",        font=("Microsoft YaHei", 11, "bold"))
+        text.tag_config("italic",      font=("Microsoft YaHei", 11, "italic"))
+        text.tag_config("bold_italic", font=("Microsoft YaHei", 11, "bold", "italic"))
         text.tag_config("code", font=("Consolas", 10),
-                        background="#f0e8fa", foreground="#5a3a8a")
+                        background="#F5F3FF", foreground="#5B21B6")
         text.tag_config("code_block", font=("Consolas", 10),
-                        background="#f0e8fa", foreground="#3a2a6a",
+                        background="#F5F3FF", foreground="#4C1D95",
                         lmargin1=18, lmargin2=18, spacing1=4, spacing3=4)
         text.tag_config("list_bullet", foreground=SKY_DARK,
-                        font=("幼圆", 12, "bold"))
+                        font=("Microsoft YaHei", 11, "bold"))
         text.tag_config("blockquote_marker", foreground=SKY_DARK,
-                        font=("幼圆", 12, "bold"))
+                        font=("Microsoft YaHei", 11, "bold"))
         text.tag_config("blockquote", foreground=TEXT_LIGHT,
-                        font=("幼圆", 11, "italic"), lmargin1=4, lmargin2=18)
+                        font=("Microsoft YaHei", 11, "italic"), lmargin1=4, lmargin2=18)
         text.tag_config("hr", foreground=SKY_LIGHT, font=("Consolas", 8),
                         spacing1=6, spacing3=6, justify="center")
         text.tag_config("link", foreground=SKY_DARK, underline=True)
         text.tag_config("frontmatter", foreground=TEXT_LIGHT, font=FONT_MONO,
                         lmargin1=4, lmargin2=4)
-        # Ctrl+F highlights (light yellow for any hit, orange for current).
-        text.tag_config("find_hit", background="#fff4a3")
-        text.tag_config("find_current", background="#ffba5c", foreground="#3a2a00")
+        # Ctrl+F highlights (light amber for any hit, deeper amber for current).
+        text.tag_config("find_hit", background="#FDE68A")
+        text.tag_config("find_current", background="#F59E0B", foreground="#1E1B4B")
 
         self.body = body
         self.text = text
@@ -465,7 +463,7 @@ class _ReaderWindow:
         emoji_w = f_emoji.measure("📄")
         c.create_text(
             title_x + emoji_w + 8, name_y, text=self.path.name, anchor="w",
-            font=("华文琥珀", 14), fill=TEXT_MAIN, tags="chrome",
+            font=("Microsoft YaHei", 14, "bold"), fill=TEXT_MAIN, tags="chrome",
         )
         c.create_text(
             title_x, path_y, text=str(self.path), anchor="w",
@@ -485,14 +483,14 @@ class _ReaderWindow:
         )
         self._close_x_id = c.create_text(
             (cx1 + cx2) // 2, (ccy1 + ccy2) // 2,
-            text="✕", fill=TEXT_LIGHT, font=("华文琥珀", 11), tags="chrome",
+            text="✕", fill=TEXT_LIGHT, font=FONT_BODY_BOLD, tags="chrome",
         )
 
         # Dashed separator
         c.create_line(
             READER_PAD, READER_TITLE_H + 10,
             w - READER_PAD, READER_TITLE_H + 10,
-            fill="#e0eeff", width=2, dash=(6, 4), tags="chrome",
+            fill="#F3F4F6", width=1, tags="chrome",
         )
 
         # Resize handle (bottom-right corner — three short diagonal hatches)
@@ -618,7 +616,7 @@ class _ReaderWindow:
         # the entry then fills whatever remains in the middle.
         def mini(text, command, fg=TEXT_LIGHT):
             b = tk.Label(
-                bar, text=text, font=("华文琥珀", 12),
+                bar, text=text, font=("Microsoft YaHei", 12, "bold"),
                 bg=WHITE, fg=fg, cursor="hand2", padx=4,
             )
             b.bind("<Button-1>", lambda _e: command())
@@ -641,7 +639,7 @@ class _ReaderWindow:
         var = tk.StringVar()
         var.trace_add("write", lambda *_: self._find_update())
         entry = tk.Entry(
-            bar, textvariable=var, font=("幼圆", 11),
+            bar, textvariable=var, font=("Microsoft YaHei", 11),
             bg=WHITE, fg=TEXT_MAIN, insertbackground=SKY_DARK,
             relief="flat", borderwidth=0, highlightthickness=0,
         )

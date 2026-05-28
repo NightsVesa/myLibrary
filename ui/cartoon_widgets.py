@@ -1,41 +1,51 @@
-"""Cartoon Sky-Blue UI widgets — shared building blocks for all tabs.
+"""Light-tech SaaS UI widgets — shared building blocks for all tabs.
 
-Mirrors the look of `docs/cartoon-skyblue-ui-kit.html`:
-- Inputs: white field, 2.5px sky-light border, 2px sky-light bottom shadow
-- Buttons: solid colour body with 4px darker bottom shadow ("press-down" look)
-- Labels: small bold uppercase-ish for hints
+- Inputs: white field, 1px subtle border, purple focus glow
+- Buttons: flat solid colour, hover darkens
+- Labels: clean sans-serif, generous whitespace
 """
 import tkinter as tk
 
 from PIL import Image, ImageDraw
 
-# Palette (kept in sync with main_window.py)
-SKY_PRIMARY = "#5CB8F0"
-SKY_DARK = "#3a90cc"
-SKY_LIGHT = "#a8d4f4"
-SKY_PALE = "#e0f2ff"
+# ── Palette (purple-amber SaaS) ─────────────────────────────────────────
+SKY_PRIMARY = "#7C3AED"    # primary purple
+SKY_DARK = "#6D28D9"       # dark purple
+SKY_LIGHT = "#E5E7EB"      # subtle border
+SKY_PALE = "#F5F3FF"       # pale purple tint
 WHITE = "#ffffff"
-TEXT_MAIN = "#2c3e50"
-TEXT_LIGHT = "#6b7c8f"
-MINT = "#5DD5A8"
-MINT_DARK = "#3db88a"
-PINK = "#F07AA0"
-ORANGE = "#FFC94A"
-ORANGE_DARK = "#dba42a"
+TEXT_MAIN = "#1E1B4B"       # deep purple-black
+TEXT_LIGHT = "#6B7280"      # warm grey
+DASH_LINE = "#F3F4F6"       # near-invisible divider
+LAVENDER = "#8B5CF6"        # violet accent
+MINT = "#10B981"            # emerald
+MINT_DARK = "#059669"       # dark emerald
+PINK = "#F43F5E"            # rose
+ORANGE = "#F59E0B"          # amber
+ORANGE_DARK = "#D97706"     # dark amber
 
-# ── Cartoon fonts ──────────────────────────────────────────────────────────
-# YouYuan = soft, rounded sans (cartoon body text)
-# Huawen Hupo = thick rounded display (titles)
-# Comic Sans MS = playful English fallback
-FONT_TITLE = ("华文琥珀", 13)
-FONT_HEADING = ("华文琥珀", 11)
-FONT_BODY = ("幼圆", 10)
-FONT_BODY_BOLD = ("幼圆", 10, "bold")
-FONT_HINT = ("幼圆", 9)
-FONT_BUTTON = ("幼圆", 11, "bold")
-FONT_INPUT = ("幼圆", 11)
+# Aliases for backward compatibility
+PURPLE_PRIMARY = SKY_PRIMARY
+PURPLE_DARK = SKY_DARK
+PURPLE_LIGHT = "#C4B5FD"
+AMBER = ORANGE
+AMBER_DARK = ORANGE_DARK
+EMERALD = MINT
+EMERALD_DARK = MINT_DARK
+ROSE = PINK
+DIVIDER = DASH_LINE
+GLASS_BG = "#F9FAFB"
+
+# ── Fonts ──────────────────────────────────────────────────────────────────
+FONT_TITLE = ("Microsoft YaHei", 14, "bold")
+FONT_HEADING = ("Microsoft YaHei", 12, "bold")
+FONT_BODY = ("Microsoft YaHei", 10)
+FONT_BODY_BOLD = ("Microsoft YaHei", 10, "bold")
+FONT_HINT = ("Microsoft YaHei", 9)
+FONT_BUTTON = ("Microsoft YaHei", 11, "bold")
+FONT_INPUT = ("Microsoft YaHei", 11)
 FONT_MONO = ("Consolas", 9)
-FONT_SHORTCUT = ("Comic Sans MS", 9, "bold")
+FONT_SHORTCUT = ("Consolas", 9)
 
 
 def _round_rect_points(x1, y1, x2, y2, r):
@@ -51,26 +61,46 @@ def hex_to_rgb(s: str) -> tuple[int, int, int]:
     return tuple(int(s[i:i + 2], 16) for i in (1, 3, 5))
 
 
+def _lighten(hex_color: str, factor: float = 0.15) -> str:
+    """Return a lighter version of hex_color."""
+    r, g, b = hex_to_rgb(hex_color)
+    r = min(255, int(r + (255 - r) * factor))
+    g = min(255, int(g + (255 - g) * factor))
+    b = min(255, int(b + (255 - b) * factor))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _darken(hex_color: str, factor: float = 0.12) -> str:
+    """Return a darker version of hex_color."""
+    r, g, b = hex_to_rgb(hex_color)
+    r = max(0, int(r * (1 - factor)))
+    g = max(0, int(g * (1 - factor)))
+    b = max(0, int(b * (1 - factor)))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 def make_card_png(w: int, h: int, radius: int,
                   body_hex: str, edge_hex: str, shadow_hex: str,
                   shadow_px: int,
                   magenta=(255, 0, 255)) -> Image.Image:
-    """Cartoon card: rounded body + edge outline + bottom drop-shadow strip.
+    """Glass-style card: rounded body + subtle 1px border + soft shadow.
 
     Pixels outside the visible card are filled with `magenta` so callers can
     use the OS transparent-color key for a true rounded-window effect.
     """
     img = Image.new("RGB", (w, h), magenta)
     dr = ImageDraw.Draw(img)
+    # Soft shadow (lighter than edge for diffuse look)
     dr.rounded_rectangle(
         [(0, shadow_px), (w - 1, h - 1)],
         radius=radius, fill=hex_to_rgb(shadow_hex),
     )
+    # Card body with 1px border
     dr.rounded_rectangle(
         [(0, 0), (w - 1, h - 1 - shadow_px)],
         radius=radius,
         fill=hex_to_rgb(body_hex),
-        outline=hex_to_rgb(edge_hex), width=3,
+        outline=hex_to_rgb(edge_hex), width=1,
     )
     return img
 
@@ -79,16 +109,15 @@ def _split_leading_emoji(s: str) -> tuple[str, str]:
     """Return (emoji_prefix, rest_text) where emoji_prefix holds any
     leading emoji codepoints (+ trailing space) and rest_text is the
     remainder.  Used so we can render emoji and CJK text with different
-    fonts on the same button — `幼圆` etc. don't carry emoji glyphs.
+    fonts on the same button.
     """
     if not s:
         return ("", "")
-    # Common Unicode blocks that hold pictographic emoji
     def is_emoji(ch: str) -> bool:
         cp = ord(ch)
         return (
-            0x1F300 <= cp <= 0x1FAFF or   # supplemental symbols & pictographs
-            0x2600  <= cp <= 0x27BF  or   # misc symbols + dingbats
+            0x1F300 <= cp <= 0x1FAFF or
+            0x2600  <= cp <= 0x27BF  or
             0x2700  <= cp <= 0x27BF
         )
 
@@ -99,10 +128,9 @@ def _split_leading_emoji(s: str) -> tuple[str, str]:
 
 
 def cartoon_label(parent, text, *, kind="title"):
-    """Small label.  `kind`: 'title' (bigger main), 'hint' (small grey).
+    """Label widget.  `kind`: 'title' (bold heading), 'hint' (small grey).
 
-    Background colour is inherited from `parent` so the label is invisible
-    against any themed pane background (sky-pale / mint-pale / etc.).
+    Background colour is inherited from `parent`.
     """
     if kind == "title":
         font = FONT_HEADING
@@ -116,21 +144,21 @@ def cartoon_label(parent, text, *, kind="title"):
 
 def cartoon_entry(parent, textvariable=None, *, placeholder=None,
                   height=36, bg_color=None, border_color=SKY_LIGHT):
-    """Cartoon-style input.  Wraps `tk.Entry` in a coloured border Frame.
+    """Input field with subtle 1px border and purple focus glow.
 
-    `bg_color` controls the inner fill — defaults to the parent's bg so the
-    input blends into the themed pane.  `border_color` is the 2px outline.
+    `bg_color` controls the inner fill — defaults to the parent's bg.
+    `border_color` is the unfocused border (1px).
     """
     if bg_color is None:
         bg_color = parent.cget("bg") if hasattr(parent, "cget") else WHITE
     border = tk.Frame(parent, bg=border_color, bd=0)
     inner = tk.Frame(border, bg=bg_color)
-    inner.pack(fill="both", expand=True, padx=2, pady=(2, 3))
+    inner.pack(fill="both", expand=True, padx=1, pady=1)
 
     entry = tk.Entry(
         inner, textvariable=textvariable,
         font=FONT_INPUT,
-        bg=bg_color, fg=TEXT_MAIN, insertbackground=SKY_DARK,
+        bg=bg_color, fg=TEXT_MAIN, insertbackground=SKY_PRIMARY,
         relief="flat", borderwidth=0, highlightthickness=0,
     )
     entry.pack(fill="both", expand=True, padx=8, pady=4)
@@ -152,7 +180,7 @@ def cartoon_entry(parent, textvariable=None, *, placeholder=None,
 
 
 def _attach_placeholder(entry, placeholder):
-    PLACEHOLDER_FG = "#b0c8d8"
+    PLACEHOLDER_FG = "#9CA3AF"
     REAL_FG = TEXT_MAIN
 
     def show():
@@ -179,17 +207,17 @@ def _attach_placeholder(entry, placeholder):
 
 def cartoon_textarea(parent, *, height=12, bg_color=None,
                      border_color=SKY_LIGHT):
-    """Multi-line text area with the same cartoon border treatment."""
+    """Multi-line text area with the same 1px border treatment."""
     if bg_color is None:
         bg_color = parent.cget("bg") if hasattr(parent, "cget") else WHITE
     border = tk.Frame(parent, bg=border_color, bd=0)
     inner = tk.Frame(border, bg=bg_color)
-    inner.pack(fill="both", expand=True, padx=2, pady=(2, 3))
+    inner.pack(fill="both", expand=True, padx=1, pady=1)
 
     text = tk.Text(
         inner, height=height, wrap=tk.WORD,
         font=FONT_BODY,
-        bg=bg_color, fg=TEXT_MAIN, insertbackground=SKY_DARK,
+        bg=bg_color, fg=TEXT_MAIN, insertbackground=SKY_PRIMARY,
         relief="flat", borderwidth=0, highlightthickness=0,
         padx=8, pady=6,
     )
@@ -200,16 +228,16 @@ def cartoon_textarea(parent, *, height=12, bg_color=None,
 
 
 class CartoonButton(tk.Canvas):
-    """Solid cartoon button with a 4px coloured shadow underneath.
+    """Flat solid-colour button with hover darkening.
 
-    Use `kind` to pick a color scheme: sky / mint / pink / orange / ghost.
+    Use `kind` to pick a color scheme: sky / mint / pink / orange.
     """
 
     KINDS = {
         "sky":     (SKY_PRIMARY, SKY_DARK, WHITE),
         "mint":    (MINT,       MINT_DARK,  WHITE),
-        "pink":    (PINK,       "#cc5578",  WHITE),
-        "orange":  (ORANGE,     ORANGE_DARK, "#7a5200"),
+        "pink":    (PINK,       "#BE123C",  WHITE),
+        "orange":  (ORANGE,     ORANGE_DARK, WHITE),
     }
 
     def __init__(self, parent, text, command=None, *, kind="sky", width=160, height=44):
@@ -224,7 +252,6 @@ class CartoonButton(tk.Canvas):
             kind, self.KINDS["sky"]
         )
         self.kind = kind
-        self._pressed = False
         self._full_text = text
         self._build(text)
 
@@ -236,7 +263,6 @@ class CartoonButton(tk.Canvas):
         self.config(cursor="hand2")
 
     def _on_configure(self, e):
-        # Repaint to match the actual size grid/pack gave us
         new_w, new_h = max(1, e.width), max(1, e.height)
         if new_w == self.W and new_h == self.H:
             return
@@ -245,28 +271,18 @@ class CartoonButton(tk.Canvas):
 
     def _build(self, text):
         self.delete("all")
-        shadow_h = 4
-        radius = 14
-        self.shadow_id = self.create_polygon(
-            _round_rect_points(1, shadow_h, self.W - 1, self.H - 1, radius),
-            smooth=True, fill=self.shadow_color, outline="",
-        )
-        body_y2 = self.H - 1 - shadow_h if not self._pressed else self.H - 1 - shadow_h + 2
-        body_y1 = 1 if not self._pressed else 3
+        radius = 8
+        # Flat button — single rounded rect, no shadow
         self.body_id = self.create_polygon(
-            _round_rect_points(1, body_y1, self.W - 1, body_y2, radius),
+            _round_rect_points(1, 1, self.W - 1, self.H - 1, radius),
             smooth=True, fill=self.body_color, outline="",
         )
 
-        # Split emoji from text and render each with a font that supports it.
-        # `幼圆` doesn't render emoji glyphs at all; rendering "💾 保存" with
-        # 幼圆 swallows the emoji and shifts everything left.
         emoji, rest = _split_leading_emoji(text)
         cx = self.W // 2
-        cy = (body_y1 + body_y2) // 2
+        cy = self.H // 2
 
         if emoji and rest:
-            # Measure each piece, then centre the combined block
             from tkinter import font as tkfont
             f_emoji = tkfont.Font(font=("Segoe UI Emoji", FONT_BUTTON[1]))
             f_text = tkfont.Font(font=FONT_BUTTON)
@@ -302,18 +318,10 @@ class CartoonButton(tk.Canvas):
 
     def _on_leave(self, _e):
         self.itemconfig(self.body_id, fill=self.body_color)
-        if self._pressed:
-            self._pressed = False
-            self._build(self._full_text)
 
     def _on_press(self, _e):
-        self._pressed = True
-        self._build(self._full_text)
+        pass
 
     def _on_release(self, _e):
-        if not self._pressed:
-            return
-        self._pressed = False
-        self._build(self._full_text)
         if self.command:
             self.command()
