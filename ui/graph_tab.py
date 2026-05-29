@@ -256,6 +256,14 @@ class _GraphWindow:
         self._detail_panel: tk.Frame | None = None
         self._detail_visible = False
 
+        # Phase 4: relationship highlighting + path mode
+        self._neighbor_ids: set[str] = set()
+        self._path_mode = False
+        self._path_source: str | None = None
+        self._path_target: str | None = None
+        self._path_nodes: list[str] = []
+        self._path_edges: set[tuple[str, str]] = set()
+
         self._build_window()
         self._build_canvas()
         self._build_toolbar()
@@ -338,12 +346,20 @@ class _GraphWindow:
             btn.bind("<Button-1>", lambda _e, idx=i: self._set_degree(idx))
             self._deg_btns.append(btn)
 
+        # Path mode button
+        self._path_btn = tk.Label(
+            tb, text="路径", font=FONT_HINT, fg=TEXT_LIGHT,
+            bg=SKY_LIGHT, padx=6, pady=2, cursor="hand2",
+        )
+        self._path_btn.pack(side="right", padx=4, pady=6)
+        self._path_btn.bind("<Button-1>", lambda _e: self._toggle_path_mode())
+
         # Reset button
         reset_btn = tk.Label(
             tb, text="重置", font=FONT_HINT, fg=TEXT_LIGHT,
             bg=CARD_BG, padx=6, pady=2, cursor="hand2",
         )
-        reset_btn.pack(side="right", padx=(4, 12), pady=6)
+        reset_btn.pack(side="right", padx=(4, 4), pady=6)
         reset_btn.bind("<Button-1>", lambda _e: self._reset_filters())
 
         self._update_toolbar_styles()
@@ -531,10 +547,19 @@ class _GraphWindow:
         self._search_query = ""
         self._filter_kinds = {"source", "entity", "concept"}
         self._min_degree = 0
+        self._path_mode = False
+        self._path_source = None
+        self._path_target = None
+        self._path_nodes = []
+        self._path_edges = set()
+        self._selected_nid = None
+        self._neighbor_ids = set()
+        self._hide_detail()
         if self._toolbar_entry:
             self._toolbar_entry.delete(0, "end")
             self._toolbar_entry._show_placeholder = True
             self._show_search_placeholder()
+        self._update_path_btn_style()
         self._apply_filters()
 
     def _apply_filters(self) -> None:
@@ -565,12 +590,79 @@ class _GraphWindow:
     # ── detail panel ─────────────────────────────────────────────────────
 
     def _select_node(self, nid: str | None) -> None:
+        # Path mode: first click = source, second click = target
+        if self._path_mode:
+            if self._path_source is None:
+                self._path_source = nid
+                self._selected_nid = nid
+                self._compute_neighbors(nid)
+                self._draw()
+                return
+            elif nid and nid != self._path_source:
+                self._path_target = nid
+                self._find_path()
+                self._draw()
+                return
+
         self._selected_nid = nid
+        self._path_source = None
+        self._path_target = None
+        self._path_nodes = []
+        self._path_edges = set()
         if nid:
+            self._compute_neighbors(nid)
             self._show_detail(nid)
         else:
+            self._neighbor_ids = set()
             self._hide_detail()
         self._draw()
+
+    def _compute_neighbors(self, nid: str | None) -> None:
+        self._neighbor_ids = set()
+        if not nid or not self._graph:
+            return
+        for e in self._graph.edges:
+            if e.source == nid:
+                self._neighbor_ids.add(e.target)
+            elif e.target == nid:
+                self._neighbor_ids.add(e.source)
+
+    def _toggle_path_mode(self) -> None:
+        self._path_mode = not self._path_mode
+        self._path_source = None
+        self._path_target = None
+        self._path_nodes = []
+        self._path_edges = set()
+        if not self._path_mode:
+            # Exiting path mode — recompute neighbors for current selection
+            self._compute_neighbors(self._selected_nid)
+        self._update_path_btn_style()
+        self._draw()
+
+    def _update_path_btn_style(self) -> None:
+        if hasattr(self, '_path_btn'):
+            if self._path_mode:
+                self._path_btn.config(bg=SKY_PRIMARY, fg=WHITE)
+            else:
+                self._path_btn.config(bg=SKY_LIGHT, fg=TEXT_LIGHT)
+
+    def _find_path(self) -> None:
+        if not self._graph or not self._path_source or not self._path_target:
+            return
+        visible_edges = filter_edges(self._graph, self._visible_ids)
+        path = shortest_path(visible_edges, self._path_source, self._path_target)
+        if path:
+            self._path_nodes = path
+            self._path_edges = set()
+            for i in range(len(path) - 1):
+                a, b = path[i], path[i + 1]
+                self._path_edges.add((a, b))
+                self._path_edges.add((b, a))
+            # Expand neighbor set to include path nodes
+            self._neighbor_ids = set(path)
+        else:
+            self._path_nodes = []
+            self._path_edges = set()
 
     def _show_detail(self, nid: str) -> None:
         self._hide_detail()
@@ -788,7 +880,8 @@ class _GraphWindow:
 
         ox, oy = self._pan["x"], self._pan["y"]
         visible = self._visible_ids
-        has_filter = bool(self._search_query or self._filter_kinds != {"source", "entity", "concept"} or self._min_degree > 0)
+        has_selection = self._selected_nid is not None and self._neighbor_ids
+        has_path = bool(self._path_nodes)
 
         # ── Edges ───────────────────────────────────────────────────────
         for e in self._graph.edges:
@@ -801,8 +894,18 @@ class _GraphWindow:
                 y1 = snd["y"] * self._scale + oy + CHROME_H + TOOLBAR_H
                 x2 = tnd["x"] * self._scale + ox
                 y2 = tnd["y"] * self._scale + oy + CHROME_H + TOOLBAR_H
-                lid = c.create_line(x1, y1, x2, y2, fill=LINK_COLOR, width=1.2)
-                c.tag_lower(lid)
+
+                # Path edge highlighting
+                edge_key = (e.source, e.target)
+                if has_path and edge_key in self._path_edges:
+                    c.create_line(x1, y1, x2, y2, fill="#F59E0B", width=3)
+                elif has_selection:
+                    connected = (e.source == self._selected_nid or e.target == self._selected_nid)
+                    color = LINK_COLOR if connected else "#F0F0F0"
+                    c.create_line(x1, y1, x2, y2, fill=color, width=1.2)
+                else:
+                    lid = c.create_line(x1, y1, x2, y2, fill=LINK_COLOR, width=1.2)
+                    c.tag_lower(lid)
 
         # ── Nodes ───────────────────────────────────────────────────────
         for nd in self._layout_nodes:
@@ -818,6 +921,11 @@ class _GraphWindow:
             outline = NODE_EDGE_HIGH.get(kind, "#777")
             w = 2 if self._degrees.get(nd["id"], 0) >= self._max_degree * 0.5 else 1.5
 
+            # Dim non-neighbors when selection active
+            if has_selection and nd["id"] != self._selected_nid and nd["id"] not in self._neighbor_ids:
+                fill = "#E5E7EB"
+                outline = "#D1D5DB"
+
             # Highlight matching nodes when search is active
             if self._search_query:
                 title_lower = self._node_title(nd["id"]).lower()
@@ -826,11 +934,15 @@ class _GraphWindow:
                     outline = "#F59E0B"  # amber highlight
                     w = 3
 
+            # Path node highlighting
+            if has_path and nd["id"] in self._path_nodes:
+                outline = "#F59E0B"
+                w = 3
+
             # Highlight selected node
             if nd["id"] == self._selected_nid:
                 outline = "#F59E0B"
                 w = 3
-                # Draw selection ring
                 c.create_oval(
                     x - r - 3, y - r - 3, x + r + 3, y + r + 3,
                     fill="", outline="#FDE68A", width=2,
