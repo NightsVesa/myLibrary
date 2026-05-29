@@ -208,6 +208,37 @@ TOOLBAR_H = 44  # toolbar height below chrome
 DEGREE_FILTERS = [0, 1, 2, 5]  # min degree options
 DEGREE_LABELS = ["全部", "1+", "2+", "5+"]
 
+# Quality signal thresholds
+HUB_PERCENTILE = 0.8  # top 20% by degree = hub
+
+
+def graph_diagnostics(
+    graph: Graph,
+    degrees: dict[str, int],
+) -> dict[str, set[str]]:
+    """Return sets of node ids with quality issues."""
+    if not graph:
+        return {"orphan": set(), "missing": set(), "hub": set()}
+
+    max_deg = max(degrees.values()) if degrees else 1
+    hub_threshold = max(1, int(max_deg * HUB_PERCENTILE))
+
+    orphans: set[str] = set()
+    missing: set[str] = set()
+    hubs: set[str] = set()
+    one_way_edges: list[tuple[str, str]] = []
+
+    for n in graph.nodes:
+        deg = degrees.get(n.id, 0)
+        if deg == 0:
+            orphans.add(n.id)
+        if not n.exists:
+            missing.add(n.id)
+        if deg >= hub_threshold and deg > 1:
+            hubs.add(n.id)
+
+    return {"orphan": orphans, "missing": missing, "hub": hubs}
+
 
 # ── standalone window ────────────────────────────────────────────────────
 
@@ -263,6 +294,10 @@ class _GraphWindow:
         self._path_target: str | None = None
         self._path_nodes: list[str] = []
         self._path_edges: set[tuple[str, str]] = set()
+
+        # Phase 5: quality signals
+        self._show_quality = False
+        self._quality_data: dict[str, set[str]] = {"orphan": set(), "missing": set(), "hub": set()}
 
         self._build_window()
         self._build_canvas()
@@ -353,6 +388,14 @@ class _GraphWindow:
         )
         self._path_btn.pack(side="right", padx=4, pady=6)
         self._path_btn.bind("<Button-1>", lambda _e: self._toggle_path_mode())
+
+        # Quality overlay button
+        self._quality_btn = tk.Label(
+            tb, text="质量", font=FONT_HINT, fg=TEXT_LIGHT,
+            bg=SKY_LIGHT, padx=6, pady=2, cursor="hand2",
+        )
+        self._quality_btn.pack(side="right", padx=2, pady=6)
+        self._quality_btn.bind("<Button-1>", lambda _e: self._toggle_quality())
 
         # Reset button
         reset_btn = tk.Label(
@@ -542,6 +585,14 @@ class _GraphWindow:
     def _set_degree(self, idx: int) -> None:
         self._min_degree = DEGREE_FILTERS[idx]
         self._apply_filters()
+
+    def _toggle_quality(self) -> None:
+        self._show_quality = not self._show_quality
+        if self._show_quality:
+            self._quality_btn.config(bg="#F59E0B", fg=WHITE)
+        else:
+            self._quality_btn.config(bg=SKY_LIGHT, fg=TEXT_LIGHT)
+        self._draw()
 
     def _reset_filters(self) -> None:
         self._search_query = ""
@@ -814,6 +865,7 @@ class _GraphWindow:
         self._graph = parse_wiki_graph(config.WIKI_DIR)
         self._degrees = self._compute_degrees(self._graph)
         self._max_degree = max(self._degrees.values()) if self._degrees else 1
+        self._quality_data = graph_diagnostics(self._graph, self._degrees)
         content_w, content_h = self.w, self.h - CHROME_H - TOOLBAR_H
         self._layout_nodes = _layout(self._graph, content_w, content_h)
         self._scale = 1.0
@@ -952,6 +1004,27 @@ class _GraphWindow:
                 x - r, y - r, x + r, y + r,
                 fill=fill, outline=outline, width=w,
             )
+
+            # Quality overlays
+            if self._show_quality:
+                if nd["id"] in self._quality_data.get("orphan", set()):
+                    # Dashed outline for orphans
+                    c.create_oval(
+                        x - r - 2, y - r - 2, x + r + 2, y + r + 2,
+                        fill="", outline="#9CA3AF", width=1, dash=(3, 3),
+                    )
+                if nd["id"] in self._quality_data.get("missing", set()):
+                    # Red warning outline for missing pages
+                    c.create_oval(
+                        x - r - 2, y - r - 2, x + r + 2, y + r + 2,
+                        fill="", outline="#E11D48", width=2,
+                    )
+                if nd["id"] in self._quality_data.get("hub", set()):
+                    # Ring for dense hubs
+                    c.create_oval(
+                        x - r - 4, y - r - 4, x + r + 4, y + r + 4,
+                        fill="", outline="#F59E0B", width=1,
+                    )
 
             title = self._node_title(nd["id"])
             fs = max(6, int(FONT_NODE[1] * self._scale))
