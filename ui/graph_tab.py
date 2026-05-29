@@ -530,8 +530,10 @@ class _GraphWindow:
     def _hit_node(self, mx: float, my: float) -> str | None:
         ox, oy = self._pan["x"], self._pan["y"]
         for nd in reversed(self._layout_nodes):
+            if self._visible_ids and nd["id"] not in self._visible_ids:
+                continue
             nx = nd["x"] * self._scale + ox
-            ny = nd["y"] * self._scale + oy + CHROME_H
+            ny = nd["y"] * self._scale + oy + CHROME_H + TOOLBAR_H
             base_r = NODE_R_BASE.get(self._node_kind(nd["id"]), 8)
             r = self._deg_r(nd["id"], base_r) + 4
             if abs(mx - nx) < r and abs(my - ny) < r:
@@ -964,14 +966,16 @@ class _GraphWindow:
                 # Path edge highlighting
                 edge_key = (e.source, e.target)
                 if has_path and edge_key in self._path_edges:
-                    c.create_line(x1, y1, x2, y2, fill="#F59E0B", width=3)
+                    c.create_line(x1, y1, x2, y2, fill="#F59E0B", width=3,
+                                  tags="edge")
                 elif has_selection:
                     connected = (e.source == self._selected_nid or e.target == self._selected_nid)
                     color = LINK_COLOR if connected else "#F0F0F0"
-                    c.create_line(x1, y1, x2, y2, fill=color, width=1.2)
+                    c.create_line(x1, y1, x2, y2, fill=color, width=1.2,
+                                  tags="edge")
                 else:
-                    lid = c.create_line(x1, y1, x2, y2, fill=LINK_COLOR, width=1.2)
-                    c.tag_lower(lid)
+                    c.create_line(x1, y1, x2, y2, fill=LINK_COLOR, width=1.2,
+                                  tags="edge")
 
         # ── Nodes ───────────────────────────────────────────────────────
         for nd in self._layout_nodes:
