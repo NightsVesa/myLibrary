@@ -299,6 +299,10 @@ class _GraphWindow:
         self._show_quality = False
         self._quality_data: dict[str, set[str]] = {"orphan": set(), "missing": set(), "hub": set()}
 
+        # Phase 6: performance
+        self._graph_mtime: float = 0.0  # index.md mtime at last parse
+        self._label_hide_threshold = 300  # hide labels when node count exceeds this
+
         self._build_window()
         self._build_canvas()
         self._build_toolbar()
@@ -431,7 +435,7 @@ class _GraphWindow:
             self._iconify()
             return
         if btn == 3:  # refresh
-            self._reload()
+            self._reload(force=True)
             return
         # Resize: any edge within GRIP px
         on_right  = e.x >= self.w - GRIP
@@ -860,9 +864,18 @@ class _GraphWindow:
 
     # ── data ─────────────────────────────────────────────────────────────
 
-    def _reload(self) -> None:
+    def _reload(self, *, force: bool = False) -> None:
         import config
+        idx_path = config.WIKI_DIR / "index.md"
+        current_mtime = idx_path.stat().st_mtime if idx_path.exists() else 0.0
+
+        # Cache: skip reparse if index.md hasn't changed
+        if not force and self._graph and current_mtime == self._graph_mtime:
+            self._apply_filters()
+            return
+
         self._graph = parse_wiki_graph(config.WIKI_DIR)
+        self._graph_mtime = current_mtime
         self._degrees = self._compute_degrees(self._graph)
         self._max_degree = max(self._degrees.values()) if self._degrees else 1
         self._quality_data = graph_diagnostics(self._graph, self._degrees)
@@ -933,6 +946,7 @@ class _GraphWindow:
         ox, oy = self._pan["x"], self._pan["y"]
         visible = self._visible_ids
         has_selection = self._selected_nid is not None and self._neighbor_ids
+        show_labels = len(self._layout_nodes) < self._label_hide_threshold or self._scale > 1.2
         has_path = bool(self._path_nodes)
 
         # ── Edges ───────────────────────────────────────────────────────
@@ -1026,12 +1040,14 @@ class _GraphWindow:
                         fill="", outline="#F59E0B", width=1,
                     )
 
-            title = self._node_title(nd["id"])
-            fs = max(6, int(FONT_NODE[1] * self._scale))
-            c.create_text(
-                x + r + 3, y, text=title,
-                anchor="w", fill=TEXT_MAIN, font=(FONT_NODE[0], fs),
-            )
+            # Labels: hide for large graphs unless zoomed in
+            if show_labels:
+                title = self._node_title(nd["id"])
+                fs = max(6, int(FONT_NODE[1] * self._scale))
+                c.create_text(
+                    x + r + 3, y, text=title,
+                    anchor="w", fill=TEXT_MAIN, font=(FONT_NODE[0], fs),
+                )
 
         # ── Chrome ──────────────────────────────────────────────────────
         self._draw_chrome()
