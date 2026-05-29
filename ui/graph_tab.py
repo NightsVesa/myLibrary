@@ -251,6 +251,11 @@ class _GraphWindow:
         self._visible_ids: set[str] = set()
         self._toolbar_entry: tk.Entry | None = None
 
+        # Phase 3: detail panel
+        self._selected_nid: str | None = None
+        self._detail_panel: tk.Frame | None = None
+        self._detail_visible = False
+
         self._build_window()
         self._build_canvas()
         self._build_toolbar()
@@ -390,7 +395,8 @@ class _GraphWindow:
             self._node_press_pos = (e.x, e.y)
             self._mode = "node_drag"
             return
-        # Background pan
+        # Background click deselects, then pan
+        self._select_node(None)
         self._mode = "pan"
         self._pan_start = (e.x - self._pan["x"], e.y - self._pan["y"])
 
@@ -431,7 +437,10 @@ class _GraphWindow:
             dx = e.x - self._node_press_pos[0]
             dy = e.y - self._node_press_pos[1]
             if dx * dx + dy * dy < NODE_CLICK_THRESHOLD * NODE_CLICK_THRESHOLD:
-                self._open_page(self._drag_nid)
+                self._select_node(self._drag_nid)
+        elif self._mode == "pan":
+            # Click on background deselects
+            pass
         self._mode = None
         self._drag_nid = None
         self._resize_edge = ""
@@ -553,6 +562,129 @@ class _GraphWindow:
             else:
                 btn.config(bg=SKY_LIGHT, fg=TEXT_LIGHT)
 
+    # ── detail panel ─────────────────────────────────────────────────────
+
+    def _select_node(self, nid: str | None) -> None:
+        self._selected_nid = nid
+        if nid:
+            self._show_detail(nid)
+        else:
+            self._hide_detail()
+        self._draw()
+
+    def _show_detail(self, nid: str) -> None:
+        self._hide_detail()
+        if not self._graph:
+            return
+
+        node = next((n for n in self._graph.nodes if n.id == nid), None)
+        if not node:
+            return
+
+        panel_w = 220
+        panel_h = 280
+        px = self.w - panel_w - 12
+        py = CHROME_H + TOOLBAR_H + 8
+
+        pf = tk.Frame(self.win, bg=WHITE, highlightbackground=GLASS_EDGE,
+                       highlightthickness=1)
+        pf.place(x=px, y=py, width=panel_w, height=panel_h)
+        self._detail_panel = pf
+
+        # Title
+        kind_colors = {"source": "#7C3AED", "entity": "#10B981", "concept": "#F59E0B"}
+        kind_color = kind_colors.get(node.kind, "#888")
+        kind_labels = {"source": "来源", "entity": "实体", "concept": "概念"}
+
+        header = tk.Frame(pf, bg=WHITE)
+        header.pack(fill="x", padx=12, pady=(12, 4))
+
+        tk.Label(header, text=node.title, font=("Microsoft YaHei", 12, "bold"),
+                 fg=TEXT_MAIN, bg=WHITE, anchor="w").pack(fill="x")
+
+        tk.Label(header, text=kind_labels.get(node.kind, node.kind),
+                 font=FONT_HINT, fg=WHITE, bg=kind_color,
+                 padx=6, pady=1).pack(anchor="w", pady=(4, 0))
+
+        # Stats
+        deg = self._degrees.get(nid, 0)
+        inbound = sum(1 for e in self._graph.edges if e.target == nid)
+        outbound = sum(1 for e in self._graph.edges if e.source == nid)
+
+        stats = tk.Frame(pf, bg=WHITE)
+        stats.pack(fill="x", padx=12, pady=8)
+        for label, value in [("连接度", str(deg)), ("入度", str(inbound)), ("出度", str(outbound))]:
+            row = tk.Frame(stats, bg=WHITE)
+            row.pack(fill="x", pady=1)
+            tk.Label(row, text=label, font=FONT_HINT, fg=TEXT_LIGHT,
+                     bg=WHITE, anchor="w").pack(side="left")
+            tk.Label(row, text=value, font=FONT_BODY, fg=TEXT_MAIN,
+                     bg=WHITE, anchor="e").pack(side="right")
+
+        # Path
+        path_frame = tk.Frame(pf, bg=WHITE)
+        path_frame.pack(fill="x", padx=12, pady=4)
+        tk.Label(path_frame, text="路径", font=FONT_HINT, fg=TEXT_LIGHT,
+                 bg=WHITE, anchor="w").pack(fill="x")
+        tk.Label(path_frame, text=node.path, font=FONT_MONO, fg=TEXT_MAIN,
+                 bg=WHITE, anchor="w", wraplength=panel_w - 24).pack(fill="x")
+
+        # Summary
+        if node.summary:
+            sum_frame = tk.Frame(pf, bg=WHITE)
+            sum_frame.pack(fill="x", padx=12, pady=4)
+            tk.Label(sum_frame, text="摘要", font=FONT_HINT, fg=TEXT_LIGHT,
+                     bg=WHITE, anchor="w").pack(fill="x")
+            tk.Label(sum_frame, text=node.summary, font=FONT_HINT, fg=TEXT_MAIN,
+                     bg=WHITE, anchor="w", wraplength=panel_w - 24,
+                     justify="left").pack(fill="x")
+
+        # Missing page warning
+        if not node.exists:
+            tk.Label(pf, text="⚠ 页面文件不存在", font=FONT_HINT,
+                     fg="#E11D48", bg=WHITE).pack(padx=12, pady=4)
+
+        # Actions
+        actions = tk.Frame(pf, bg=WHITE)
+        actions.pack(fill="x", padx=12, pady=(8, 12))
+
+        if node.exists:
+            open_btn = tk.Label(actions, text="打开页面", font=FONT_HINT,
+                                fg=SKY_PRIMARY, bg=WHITE, cursor="hand2")
+            open_btn.pack(side="left", padx=(0, 8))
+            open_btn.bind("<Button-1>", lambda _e: self._open_page(nid))
+
+        center_btn = tk.Label(actions, text="居中", font=FONT_HINT,
+                              fg=SKY_PRIMARY, bg=WHITE, cursor="hand2")
+        center_btn.pack(side="left", padx=(0, 8))
+        center_btn.bind("<Button-1>", lambda _e: self._center_node(nid))
+
+        copy_btn = tk.Label(actions, text="复制路径", font=FONT_HINT,
+                            fg=SKY_PRIMARY, bg=WHITE, cursor="hand2")
+        copy_btn.pack(side="left")
+        copy_btn.bind("<Button-1>", lambda _e: self._copy_path(nid))
+
+    def _hide_detail(self) -> None:
+        if self._detail_panel:
+            self._detail_panel.destroy()
+            self._detail_panel = None
+        self._detail_visible = False
+
+    def _center_node(self, nid: str) -> None:
+        for nd in self._layout_nodes:
+            if nd["id"] == nid:
+                self._pan["x"] = self.w / 2 - nd["x"] * self._scale
+                self._pan["y"] = (self.h - CHROME_H - TOOLBAR_H) / 2 - nd["y"] * self._scale
+                self._draw()
+                break
+
+    def _copy_path(self, nid: str) -> None:
+        try:
+            self.win.clipboard_clear()
+            self.win.clipboard_append(nid)
+        except tk.TclError:
+            pass
+
     def _on_resize(self, e) -> None:
         if e.widget is not self.win:
             return
@@ -565,6 +697,7 @@ class _GraphWindow:
             self._canvas.config(width=self.w, height=self.h)
             if hasattr(self, '_toolbar') and self._toolbar:
                 self._toolbar.place(width=self.w)
+            self._hide_detail()
             self._draw()
             if hasattr(self, '_relayout_after'):
                 self.win.after_cancel(self._relayout_after)
@@ -692,6 +825,16 @@ class _GraphWindow:
                 if self._search_query.lower() in title_lower or self._search_query.lower() in path_lower:
                     outline = "#F59E0B"  # amber highlight
                     w = 3
+
+            # Highlight selected node
+            if nd["id"] == self._selected_nid:
+                outline = "#F59E0B"
+                w = 3
+                # Draw selection ring
+                c.create_oval(
+                    x - r - 3, y - r - 3, x + r + 3, y + r + 3,
+                    fill="", outline="#FDE68A", width=2,
+                )
 
             c.create_oval(
                 x - r, y - r, x + r, y + r,
