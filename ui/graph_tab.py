@@ -5,13 +5,18 @@ import tkinter as tk
 from pathlib import Path
 
 from llm.graph_data import parse_wiki_graph, Graph, Node as GNode, Edge as GEdge
-from ui.cartoon_widgets import TEXT_MAIN, TEXT_LIGHT
+from ui.cartoon_widgets import (
+    TEXT_MAIN, TEXT_LIGHT, APP_BG, WHITE, GLASS_EDGE, SOFT_SHADOW,
+    AMBER_SOFT, PURPLE_SOFT, CARD_BG, SKY_PRIMARY, SKY_LIGHT,
+    FONT_BODY, FONT_HINT, FONT_MONO,
+    _round_rect_points,
+)
 
 # ── constants ────────────────────────────────────────────────────────────
 
-DEFAULT_W, DEFAULT_H = 860, 580
+DEFAULT_W, DEFAULT_H = 980, 680
 MIN_W, MIN_H = 480, 340
-BG = "#FAFAFE"
+BG = APP_BG
 TRANSPARENT = "#ff00ff"
 
 CHROME_H = 38        # title-bar height
@@ -34,7 +39,7 @@ NODE_EDGE_HIGH = {
     "entity":  "#059669",  # emerald-600
     "concept": "#D97706",  # amber-600
 }
-LINK_COLOR = "#E5E7EB"
+LINK_COLOR = "#DDD6FE"
 FONT_NODE = ("Microsoft YaHei", 7)
 FONT_TITLE = ("Microsoft YaHei", 10, "bold")
 NODE_CLICK_THRESHOLD = 5  # px — distinguishes click from drag
@@ -135,6 +140,75 @@ def _layout(graph: Graph, width: float, height: float) -> list[dict]:
     return nodes
 
 
+# ── filter helpers (pure, testable without tk) ──────────────────────────────
+
+def filter_nodes(
+    graph: Graph,
+    *,
+    kinds: set[str] | None = None,
+    min_degree: int = 0,
+    search: str = "",
+    degrees: dict[str, int] | None = None,
+) -> set[str]:
+    """Return set of visible node ids after applying filters."""
+    if degrees is None:
+        degrees = {}
+    search_lower = search.lower().strip()
+    visible: set[str] = set()
+    for n in graph.nodes:
+        if kinds and n.kind not in kinds:
+            continue
+        if min_degree > 0 and degrees.get(n.id, 0) < min_degree:
+            continue
+        if search_lower:
+            title_match = search_lower in n.title.lower()
+            path_match = search_lower in n.id.lower()
+            if not title_match and not path_match:
+                continue
+        visible.add(n.id)
+    return visible
+
+
+def filter_edges(
+    graph: Graph,
+    visible_ids: set[str],
+) -> list[GEdge]:
+    """Return edges where both endpoints are visible."""
+    return [e for e in graph.edges if e.source in visible_ids and e.target in visible_ids]
+
+
+def shortest_path(
+    edges: list[GEdge],
+    source: str,
+    target: str,
+) -> list[str] | None:
+    """BFS shortest path between source and target. Returns node ids or None."""
+    if source == target:
+        return [source]
+    adj: dict[str, list[str]] = {}
+    for e in edges:
+        adj.setdefault(e.source, []).append(e.target)
+        adj.setdefault(e.target, []).append(e.source)
+    from collections import deque
+    visited = {source}
+    queue: deque[list[str]] = deque([[source]])
+    while queue:
+        path = queue.popleft()
+        current = path[-1]
+        for neighbor in adj.get(current, []):
+            if neighbor == target:
+                return path + [neighbor]
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(path + [neighbor])
+    return None
+
+
+TOOLBAR_H = 44  # toolbar height below chrome
+DEGREE_FILTERS = [0, 1, 2, 5]  # min degree options
+DEGREE_LABELS = ["全部", "1+", "2+", "5+"]
+
+
 # ── standalone window ────────────────────────────────────────────────────
 
 class _GraphWindow:
@@ -170,8 +244,16 @@ class _GraphWindow:
         self._restore_geo = ""
         self._in_resize = False
 
+        # Phase 2: filter state
+        self._search_query = ""
+        self._filter_kinds: set[str] = {"source", "entity", "concept"}
+        self._min_degree = 0
+        self._visible_ids: set[str] = set()
+        self._toolbar_entry: tk.Entry | None = None
+
         self._build_window()
         self._build_canvas()
+        self._build_toolbar()
         self._bind_events()
         self.win.after(100, self._reload)
 
@@ -196,6 +278,70 @@ class _GraphWindow:
         )
         c.place(x=0, y=0, width=self.w, height=self.h)
         self._canvas = c
+
+    def _build_toolbar(self) -> None:
+        """Compact toolbar below chrome: search + type toggles + degree filter."""
+        tb = tk.Frame(self.win, bg=CARD_BG)
+        tb.place(x=0, y=CHROME_H, width=self.w, height=TOOLBAR_H)
+        self._toolbar = tb
+
+        # Search entry
+        search_frame = tk.Frame(tb, bg=SKY_LIGHT, bd=0)
+        search_frame.pack(side="left", padx=(12, 4), pady=6)
+        inner = tk.Frame(search_frame, bg=WHITE)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        self._toolbar_entry = tk.Entry(
+            inner, font=FONT_MONO, bg=WHITE, fg=TEXT_MAIN,
+            insertbackground=SKY_PRIMARY, relief="flat", borderwidth=0,
+            highlightthickness=0, width=16,
+        )
+        self._toolbar_entry.pack(fill="both", expand=True, padx=6, pady=2)
+        self._toolbar_entry.insert(0, "")
+        self._toolbar_entry.bind("<KeyRelease>", self._on_search_change)
+        self._toolbar_entry.bind("<FocusIn>", lambda _e: self._toolbar_entry.select_range(0, "end"))
+
+        # Placeholder
+        self._toolbar_entry._placeholder = "搜索节点..."
+        self._toolbar_entry._show_placeholder = True
+        self._show_search_placeholder()
+        self._toolbar_entry.bind("<FocusIn>", self._on_search_focus_in, add="+")
+        self._toolbar_entry.bind("<FocusOut>", self._on_search_focus_out, add="+")
+
+        # Type toggles
+        self._kind_btns: dict[str, tk.Label] = {}
+        kind_frame = tk.Frame(tb, bg=CARD_BG)
+        kind_frame.pack(side="left", padx=4, pady=6)
+        for kind, label in [("source", "来源"), ("entity", "实体"), ("concept", "概念")]:
+            btn = tk.Label(
+                kind_frame, text=label, font=FONT_HINT, fg=TEXT_MAIN,
+                bg=SKY_LIGHT, padx=8, pady=2, cursor="hand2",
+            )
+            btn.pack(side="left", padx=2)
+            btn.bind("<Button-1>", lambda _e, k=kind: self._toggle_kind(k))
+            self._kind_btns[kind] = btn
+
+        # Degree filter
+        deg_frame = tk.Frame(tb, bg=CARD_BG)
+        deg_frame.pack(side="left", padx=(8, 4), pady=6)
+        self._deg_btns: list[tk.Label] = []
+        for i, label in enumerate(DEGREE_LABELS):
+            btn = tk.Label(
+                deg_frame, text=label, font=FONT_HINT, fg=TEXT_MAIN,
+                bg=SKY_LIGHT, padx=6, pady=2, cursor="hand2",
+            )
+            btn.pack(side="left", padx=1)
+            btn.bind("<Button-1>", lambda _e, idx=i: self._set_degree(idx))
+            self._deg_btns.append(btn)
+
+        # Reset button
+        reset_btn = tk.Label(
+            tb, text="重置", font=FONT_HINT, fg=TEXT_LIGHT,
+            bg=CARD_BG, padx=6, pady=2, cursor="hand2",
+        )
+        reset_btn.pack(side="right", padx=(4, 12), pady=6)
+        reset_btn.bind("<Button-1>", lambda _e: self._reset_filters())
+
+        self._update_toolbar_styles()
 
     # ── events ───────────────────────────────────────────────────────────
 
@@ -330,6 +476,83 @@ class _GraphWindow:
         self._scale = new_scale
         self._draw()
 
+    # ── toolbar handlers ─────────────────────────────────────────────────
+
+    def _show_search_placeholder(self) -> None:
+        e = self._toolbar_entry
+        if e and e._show_placeholder and not e.get():
+            e.config(fg="#9CA3AF")
+            e.delete(0, "end")
+            e.insert(0, e._placeholder)
+
+    def _on_search_focus_in(self, _e) -> None:
+        e = self._toolbar_entry
+        if e and e._show_placeholder:
+            e._show_placeholder = False
+            e.delete(0, "end")
+            e.config(fg=TEXT_MAIN)
+
+    def _on_search_focus_out(self, _e) -> None:
+        e = self._toolbar_entry
+        if e and not e.get().strip():
+            e._show_placeholder = True
+            self._show_search_placeholder()
+
+    def _on_search_change(self, _e) -> None:
+        e = self._toolbar_entry
+        if e and not e._show_placeholder:
+            self._search_query = e.get().strip()
+        else:
+            self._search_query = ""
+        self._apply_filters()
+
+    def _toggle_kind(self, kind: str) -> None:
+        if kind in self._filter_kinds:
+            if len(self._filter_kinds) > 1:
+                self._filter_kinds.discard(kind)
+        else:
+            self._filter_kinds.add(kind)
+        self._apply_filters()
+
+    def _set_degree(self, idx: int) -> None:
+        self._min_degree = DEGREE_FILTERS[idx]
+        self._apply_filters()
+
+    def _reset_filters(self) -> None:
+        self._search_query = ""
+        self._filter_kinds = {"source", "entity", "concept"}
+        self._min_degree = 0
+        if self._toolbar_entry:
+            self._toolbar_entry.delete(0, "end")
+            self._toolbar_entry._show_placeholder = True
+            self._show_search_placeholder()
+        self._apply_filters()
+
+    def _apply_filters(self) -> None:
+        if not self._graph:
+            return
+        self._visible_ids = filter_nodes(
+            self._graph,
+            kinds=self._filter_kinds,
+            min_degree=self._min_degree,
+            search=self._search_query,
+            degrees=self._degrees,
+        )
+        self._update_toolbar_styles()
+        self._draw()
+
+    def _update_toolbar_styles(self) -> None:
+        for kind, btn in self._kind_btns.items():
+            if kind in self._filter_kinds:
+                btn.config(bg=SKY_PRIMARY, fg=WHITE)
+            else:
+                btn.config(bg=SKY_LIGHT, fg=TEXT_LIGHT)
+        for i, btn in enumerate(self._deg_btns):
+            if DEGREE_FILTERS[i] == self._min_degree:
+                btn.config(bg=SKY_PRIMARY, fg=WHITE)
+            else:
+                btn.config(bg=SKY_LIGHT, fg=TEXT_LIGHT)
+
     def _on_resize(self, e) -> None:
         if e.widget is not self.win:
             return
@@ -340,6 +563,8 @@ class _GraphWindow:
             self.w, self.h = e.width, e.height
             self._canvas.place(width=self.w, height=self.h)
             self._canvas.config(width=self.w, height=self.h)
+            if hasattr(self, '_toolbar') and self._toolbar:
+                self._toolbar.place(width=self.w)
             self._draw()
             if hasattr(self, '_relayout_after'):
                 self.win.after_cancel(self._relayout_after)
@@ -351,10 +576,10 @@ class _GraphWindow:
         """Re-run force layout for current window size."""
         if not self._graph:
             return
-        content_w, content_h = self.w, self.h - CHROME_H
+        content_w, content_h = self.w, self.h - CHROME_H - TOOLBAR_H
         self._layout_nodes = _layout(self._graph, content_w, content_h)
         self._scale = 1.0
-        self._pan = {"x": 0.0, "y": CHROME_H / 2.0}
+        self._pan = {"x": 0.0, "y": (CHROME_H + TOOLBAR_H) / 2.0}
         self._draw()
 
     # ── data ─────────────────────────────────────────────────────────────
@@ -364,11 +589,11 @@ class _GraphWindow:
         self._graph = parse_wiki_graph(config.WIKI_DIR)
         self._degrees = self._compute_degrees(self._graph)
         self._max_degree = max(self._degrees.values()) if self._degrees else 1
-        content_w, content_h = self.w, self.h - CHROME_H
+        content_w, content_h = self.w, self.h - CHROME_H - TOOLBAR_H
         self._layout_nodes = _layout(self._graph, content_w, content_h)
         self._scale = 1.0
-        self._pan = {"x": 0.0, "y": CHROME_H / 2.0}
-        self._draw()
+        self._pan = {"x": 0.0, "y": (CHROME_H + TOOLBAR_H) / 2.0}
+        self._apply_filters()
 
     @staticmethod
     def _compute_degrees(g: Graph) -> dict[str, int]:
@@ -423,38 +648,54 @@ class _GraphWindow:
     def _draw(self) -> None:
         c = self._canvas
         c.delete("all")
+        self._draw_shell()
         if not self._graph:
+            self._draw_chrome()
             return
 
         ox, oy = self._pan["x"], self._pan["y"]
+        visible = self._visible_ids
+        has_filter = bool(self._search_query or self._filter_kinds != {"source", "entity", "concept"} or self._min_degree > 0)
 
         # ── Edges ───────────────────────────────────────────────────────
         for e in self._graph.edges:
+            if e.source not in visible or e.target not in visible:
+                continue
             snd = next((n for n in self._layout_nodes if n["id"] == e.source), None)
             tnd = next((n for n in self._layout_nodes if n["id"] == e.target), None)
             if snd and tnd:
                 x1 = snd["x"] * self._scale + ox
-                y1 = snd["y"] * self._scale + oy + CHROME_H
+                y1 = snd["y"] * self._scale + oy + CHROME_H + TOOLBAR_H
                 x2 = tnd["x"] * self._scale + ox
-                y2 = tnd["y"] * self._scale + oy + CHROME_H
+                y2 = tnd["y"] * self._scale + oy + CHROME_H + TOOLBAR_H
                 lid = c.create_line(x1, y1, x2, y2, fill=LINK_COLOR, width=1.2)
                 c.tag_lower(lid)
 
         # ── Nodes ───────────────────────────────────────────────────────
         for nd in self._layout_nodes:
+            if nd["id"] not in visible:
+                continue
             x = nd["x"] * self._scale + ox
-            y = nd["y"] * self._scale + oy + CHROME_H
+            y = nd["y"] * self._scale + oy + CHROME_H + TOOLBAR_H
             kind = self._node_kind(nd["id"])
             base_r = NODE_R_BASE.get(kind, 8)
             r = self._deg_r(nd["id"], base_r) * self._scale
             r = max(3, min(24, r))
             fill = self._deg_color(nd["id"])
             outline = NODE_EDGE_HIGH.get(kind, "#777")
-            width = 2 if self._degrees.get(nd["id"], 0) >= self._max_degree * 0.5 else 1.5
+            w = 2 if self._degrees.get(nd["id"], 0) >= self._max_degree * 0.5 else 1.5
+
+            # Highlight matching nodes when search is active
+            if self._search_query:
+                title_lower = self._node_title(nd["id"]).lower()
+                path_lower = nd["id"].lower()
+                if self._search_query.lower() in title_lower or self._search_query.lower() in path_lower:
+                    outline = "#F59E0B"  # amber highlight
+                    w = 3
 
             c.create_oval(
                 x - r, y - r, x + r, y + r,
-                fill=fill, outline=outline, width=width,
+                fill=fill, outline=outline, width=w,
             )
 
             title = self._node_title(nd["id"])
@@ -467,12 +708,26 @@ class _GraphWindow:
         # ── Chrome ──────────────────────────────────────────────────────
         self._draw_chrome()
 
+    def _draw_shell(self) -> None:
+        c = self._canvas
+        c.create_rectangle(0, 0, self.w, self.h, fill=TRANSPARENT, outline="")
+        c.create_polygon(
+            _round_rect_points(0, 7, self.w, self.h, 24),
+            smooth=True, fill=SOFT_SHADOW, outline="",
+        )
+        c.create_polygon(
+            _round_rect_points(0, 0, self.w, self.h - 7, 24),
+            smooth=True, fill=self._bg, outline=GLASS_EDGE, width=1,
+        )
+        c.create_oval(max(22, self.w - 300), 18, self.w - 34, 220, fill=AMBER_SOFT, outline="")
+        c.create_oval(22, 18, min(300, self.w - 34), 220, fill=PURPLE_SOFT, outline="")
+
     def _draw_chrome(self) -> None:
         c = self._canvas
         # Title-bar background
-        c.create_rectangle(0, 0, self.w, CHROME_H, fill="#F5F3FF", outline="")
+        c.create_rectangle(1, 1, self.w - 2, CHROME_H, fill="", outline="")
         # Bottom separator
-        c.create_line(0, CHROME_H, self.w, CHROME_H, fill="#E5E7EB", width=1)
+        c.create_line(24, CHROME_H, self.w - 24, CHROME_H, fill=GLASS_EDGE, width=1)
 
         # Title
         c.create_text(
@@ -480,11 +735,16 @@ class _GraphWindow:
             anchor="w", fill=TEXT_MAIN, font=FONT_TITLE,
         )
 
-        node_count = len(self._layout_nodes) if self._layout_nodes else 0
-        edge_count = len(self._graph.edges) if self._graph else 0
+        node_count = len(self._visible_ids) if self._visible_ids else 0
+        total_nodes = len(self._graph.nodes) if self._graph else 0
+        edge_count = len(filter_edges(self._graph, self._visible_ids)) if self._graph else 0
+        if node_count == total_nodes:
+            count_text = f"{node_count} 节点  ·  {edge_count} 关系"
+        else:
+            count_text = f"{node_count}/{total_nodes} 节点  ·  {edge_count} 关系"
         c.create_text(
             110, CHROME_H // 2,
-            text=f"{node_count} 节点  ·  {edge_count} 关系",
+            text=count_text,
             anchor="w", fill=TEXT_LIGHT, font=("Microsoft YaHei", 8),
         )
 
@@ -492,8 +752,8 @@ class _GraphWindow:
         close_btns = self._chrome_buttons()
         for bx1, by1, bx2, by2, text, bg_c, ol_c in close_btns:
             c.create_polygon(
-                [bx1, by1, bx2, by1, bx2, by2, bx1, by2],
-                fill=bg_c, outline=ol_c, width=1,
+                _round_rect_points(bx1, by1, bx2, by2, 8),
+                smooth=True, fill=bg_c, outline=ol_c, width=1,
             )
             fs = ("Segoe UI Emoji", 13) if text in ("🔄", "🗖", "🗕") else ("Microsoft YaHei", 9, "bold")
             c.create_text((bx1 + bx2) // 2, (by1 + by2) // 2,
@@ -504,12 +764,7 @@ class _GraphWindow:
         for i in range(4):
             lx = grip_x + i * 8
             c.create_line(lx, self.h, self.w, grip_y + i * 8,
-                          fill="#D1D5DB", width=1.5)
-        # Window border
-        c.create_rectangle(
-            0, 0, self.w - 1, self.h - 1,
-            outline="#E5E7EB", width=1,
-        )
+                          fill="#C4B5FD", width=1.5)
 
         # ── Top-10 ranking overlay (right side) ──────────────────────────
         self._draw_ranking()
@@ -547,11 +802,13 @@ class _GraphWindow:
         return min(b[0] for b in btns)  # left edge of the leftmost button
 
     def _top_ranked(self, n: int = 10) -> list[tuple[str, str, int, str]]:
-        """Return [(nid, title, degree, kind), ...] sorted by degree DESC."""
+        """Return [(nid, title, degree, kind), ...] sorted by degree DESC, visible only."""
         if not self._graph:
             return []
         items = []
         for nd in self._graph.nodes:
+            if self._visible_ids and nd.id not in self._visible_ids:
+                continue
             deg = self._degrees.get(nd.id, 0)
             if deg > 0:
                 items.append((nd.id, nd.title, deg, nd.kind))
@@ -569,11 +826,13 @@ class _GraphWindow:
         row_h = 19
         panel_h = len(items) * row_h + 30
 
-        # Semi-transparent panel background (white with alpha-like opacity)
-        c.create_rectangle(
+        c.create_polygon(
+            _round_rect_points(
             panel_x - 6, panel_y - 4,
             panel_x + panel_w, panel_y + panel_h,
-            fill="#FAFAFE", outline="#E5E7EB", width=1,
+                10,
+            ),
+            smooth=True, fill=WHITE, outline=GLASS_EDGE, width=1,
         )
         c.create_text(
             panel_x + panel_w // 2, panel_y + 4,
