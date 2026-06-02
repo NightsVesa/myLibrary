@@ -6,3 +6,5 @@ wiki/
 .env
 build/
 dist/
+docs/
+.claude/
