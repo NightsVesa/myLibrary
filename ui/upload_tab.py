@@ -9,9 +9,9 @@ from converter.pdf_converter import pdf_to_markdown
 from storage.note_store import save_raw_file
 from llm.wiki_engine import background_ingest
 from ui.cartoon_widgets import (
-    WHITE, SKY_LIGHT, SKY_PALE, TEXT_LIGHT, TEXT_MAIN,
-    FONT_BODY,
-    cartoon_label, cartoon_textarea, CartoonButton,
+    WHITE, SKY_LIGHT, TEXT_LIGHT, TEXT_MAIN,
+    FONT_BODY, SPACING_MD, SPACING_LG, web_section,
+    cartoon_textarea, CartoonButton,
 )
 
 
@@ -39,48 +39,53 @@ class UploadTab:
 
     def _build(self) -> None:
         self.frame.grid_columnconfigure(0, weight=1)
-        # 0 hint, 1 picker row, 2 hint, 3 preview (elastic), 4 save btn
-        self.frame.grid_rowconfigure(3, weight=1)
+        self.frame.grid_rowconfigure(1, weight=1)
 
-        cartoon_label(self.frame, "选择 DOCX 或 PDF 文件", kind="hint").grid(
-            row=0, column=0, sticky="w", padx=2, pady=(4, 2),
+        picker_section = web_section(
+            self.frame, "选择 DOCX / PDF / Markdown 文件",
+            bg_color=self._bg, border_color=self._edge, accent="#10B981",
         )
+        picker_section.grid(row=0, column=0, sticky="ew", pady=(0, SPACING_LG))
+        picker_section.content.grid_columnconfigure(0, weight=1)
 
-        pick_row = tk.Frame(self.frame, bg=self._bg)
-        pick_row.grid(row=1, column=0, sticky="ew", padx=2)
+        pick_row = tk.Frame(picker_section.content, bg=picker_section.content.cget("bg"))
+        pick_row.grid(row=0, column=0, sticky="ew")
         pick_row.grid_columnconfigure(0, weight=1)
         pick_row.grid_columnconfigure(1, weight=0, minsize=58)
 
-        # Filename display (same border style as cartoon_entry but disabled)
         self._file_holder = tk.Frame(pick_row, bg=self._edge)
         self._file_holder.grid(row=0, column=0, sticky="ew")
-        self._file_inner = tk.Frame(self._file_holder, bg=self._bg)
-        self._file_inner.pack(fill="both", expand=True, padx=2, pady=(2, 3))
+        self._file_inner = tk.Frame(self._file_holder, bg=WHITE)
+        self._file_inner.pack(fill="both", expand=True, padx=1, pady=1)
         self.file_label = tk.Label(
             self._file_inner, text="未选择文件",
-            font=FONT_BODY, fg=TEXT_LIGHT, bg=self._bg, anchor="w",
+            font=FONT_BODY, fg=TEXT_LIGHT, bg=WHITE, anchor="w",
         )
-        self.file_label.pack(fill="both", expand=True, padx=8, pady=6)
+        self.file_label.pack(fill="both", expand=True, padx=12, pady=10)
 
         CartoonButton(
             pick_row, "📂", command=self._pick_file,
-            kind="mint", width=52, height=40,
-        ).grid(row=0, column=1, padx=(6, 0), sticky="e")
+            kind="mint", width=56, height=44,
+        ).grid(row=0, column=1, padx=(SPACING_MD, 0), sticky="e")
 
-        cartoon_label(self.frame, "预览（前 500 字符）", kind="hint").grid(
-            row=2, column=0, sticky="w", padx=2, pady=(10, 2),
+        preview_section = web_section(
+            self.frame, "预览（前 500 字符）",
+            bg_color=self._bg, border_color=self._edge, accent="#10B981",
         )
+        preview_section.grid(row=1, column=0, sticky="nsew", pady=(0, SPACING_LG))
+        preview_section.content.grid_columnconfigure(0, weight=1)
+        preview_section.content.grid_rowconfigure(0, weight=1)
 
         self.preview_border = cartoon_textarea(
-            self.frame, height=6, border_color=self._edge,
+            preview_section.content, height=8, border_color=self._edge,
         )
         self.preview_border.text.config(state=tk.DISABLED)
-        self.preview_border.grid(row=3, column=0, sticky="nsew", padx=2)
+        self.preview_border.grid(row=0, column=0, sticky="nsew")
 
         CartoonButton(
             self.frame, "💾 转换并保存", command=self._on_save,
-            kind="sky", height=44,
-        ).grid(row=4, column=0, sticky="ew", padx=2, pady=(10, 4))
+            kind="mint", height=48,
+        ).grid(row=2, column=0, sticky="ew", pady=(0, SPACING_MD))
 
     def _pick_file(self) -> None:
         path_str = filedialog.askopenfilename(

@@ -4,14 +4,15 @@ import queue
 import re
 import threading
 import time
+import traceback
 import tkinter as tk
 from tkinter import font as tkfont
 from pathlib import Path
 
 import ttkbootstrap as ttk
-from ttkbootstrap.constants import BOTH, LEFT, RIGHT
+from ttkbootstrap.constants import BOTH
 from ttkbootstrap.dialogs import Messagebox
-from PIL import Image, ImageDraw, ImageTk
+from PIL import ImageTk
 from tkinterdnd2 import DND_FILES
 
 from config import APP_TITLE, ASSETS_DIR
@@ -21,9 +22,10 @@ from ui.cartoon_widgets import (
     FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT, FONT_INPUT,
     CartoonButton,
     hex_to_rgb as _hex_to_rgb_shared, make_card_png as _shared_card_png,
-    SKY_PRIMARY, SKY_DARK, SKY_LIGHT, SKY_PALE,
-    WHITE, TEXT_MAIN, TEXT_LIGHT, DASH_LINE,
-    MINT, PINK, ORANGE, LAVENDER,
+    SKY_DARK,
+    WHITE, TEXT_MAIN, TEXT_LIGHT, DASH_LINE, APP_BG, CARD_BG, GLASS_EDGE, SOFT_SHADOW,
+    AMBER_SOFT, PURPLE_SOFT,
+    PINK,
 )
 from ui.input_tab import InputTab
 from ui.upload_tab import UploadTab, SUPPORTED as UPLOAD_HANDLERS
@@ -64,20 +66,28 @@ SIDEBAR_RADIUS = 18
 SIDEBAR_SHADOW = 3
 
 # Panel geometry
-PANEL_W, PANEL_H = 520, 680
-PANEL_RADIUS = 20
-PANEL_SHADOW = 4
-PANEL_TITLE_H = 52
-PANEL_BODY_PAD = 20
+PANEL_W, PANEL_H = 680, 760
+PANEL_RADIUS = 24
+PANEL_SHADOW = 8
+PANEL_TITLE_H = 64
+PANEL_BODY_PAD = 26
 PANEL_GRIP = 24          # resize-edge sensitivity (px)
-PANEL_MIN_W = 380
-PANEL_MIN_H = 320
+PANEL_MIN_W = 520
+PANEL_MIN_H = 480
 PANEL_RESIZE_DEBOUNCE_MS = 100
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 _hex_to_rgb = _hex_to_rgb_shared
+
+
+def _lighten_local(hex_color: str, factor: float) -> str:
+    r, g, b = _hex_to_rgb(hex_color)
+    r = min(255, int(r + (255 - r) * factor))
+    g = min(255, int(g + (255 - g) * factor))
+    b = min(255, int(b + (255 - b) * factor))
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def _round_rect_points(x1, y1, x2, y2, r):
@@ -87,6 +97,18 @@ def _round_rect_points(x1, y1, x2, y2, r):
         x2 - r, y2, x1 + r, y2, x1, y2,
         x1, y2 - r, x1, y1 + r, x1, y1,
     ]
+
+
+def _draw_soft_glow(canvas, w, h, *, tags=None):
+    """Canvas-only light accents kept inside the visible card."""
+    canvas.create_oval(
+        max(18, w - 260), 16, w - 28, 180,
+        fill=AMBER_SOFT, outline="", tags=tags,
+    )
+    canvas.create_oval(
+        18, 14, min(260, w - 32), 190,
+        fill=PURPLE_SOFT, outline="", tags=tags,
+    )
 
 
 def _draw_white_icon(canvas, kind, *, cx, cy, color="white"):
@@ -209,10 +231,10 @@ class _Sidebar:
             pass
         self.win.geometry(f"{self.W}x{self.H}")
 
-        # Pre-rendered card background (white + sky-light edge + bottom shadow)
+        # Pre-rendered glass toolbar background.
         bg_pil = _make_card_png(
             self.W, self.H, SIDEBAR_RADIUS,
-            WHITE, SKY_LIGHT, SKY_LIGHT, SIDEBAR_SHADOW,
+            CARD_BG, GLASS_EDGE, SOFT_SHADOW, SIDEBAR_SHADOW,
         )
         self._bg_photo = ImageTk.PhotoImage(bg_pil)
 
@@ -222,6 +244,7 @@ class _Sidebar:
         )
         self.canvas.place(x=0, y=0, width=self.W, height=self.H)
         self.canvas.create_image(0, 0, anchor="nw", image=self._bg_photo)
+        _draw_soft_glow(self.canvas, self.W, self.H)
 
         # Draw buttons on top of the card
         self.btn_regions = []
@@ -231,10 +254,10 @@ class _Sidebar:
             x2 = x1 + BTN_SIZE
             y2 = y1 + BTN_SIZE
 
-            # Bottom drop-shadow plate (creates "press-down" feel)
+            # Soft coloured plate gives each action a small identity cue.
             self.canvas.create_polygon(
                 _round_rect_points(x1, y1 + BTN_SHADOW, x2, y2 + BTN_SHADOW, BTN_RADIUS),
-                smooth=True, fill=shadow_color, outline="",
+                smooth=True, fill=_lighten_local(shadow_color, 0.55), outline="",
             )
             # Button face
             body_id = self.canvas.create_polygon(
@@ -685,7 +708,7 @@ class MainWindow:
         # PIL background = pale themed body + matching edge + bottom shadow
         bg_pil = _make_card_png(
             self._panel_w, self._panel_h, PANEL_RADIUS,
-            pale_bg, edge_color, edge_color, PANEL_SHADOW,
+            APP_BG, GLASS_EDGE, SOFT_SHADOW, PANEL_SHADOW,
         )
         self._panel_bg = ImageTk.PhotoImage(bg_pil)
 
@@ -695,6 +718,7 @@ class MainWindow:
         )
         bg_canvas.place(x=0, y=0, width=self._panel_w, height=self._panel_h)
         bg_canvas.create_image(0, 0, anchor="nw", image=self._panel_bg)
+        _draw_soft_glow(bg_canvas, self._panel_w, self._panel_h)
 
         # ── Title bar + close button + separator ─────────────────────────────
         chrome = self._draw_panel_chrome(bg_canvas, self._panel_w, label, emoji, hint)
@@ -705,7 +729,7 @@ class MainWindow:
         panel._close_x_id = chrome.close_x_id
         panel._close_cx1, panel._close_cx2 = chrome.cx1, chrome.cx2
         panel._close_cy1, panel._close_cy2 = chrome.cy1, chrome.cy2
-        panel._pale_bg = pale_bg
+        panel._pale_bg = APP_BG
         panel._edge_color = edge_color
         panel._label = label
         panel._emoji = emoji
@@ -717,8 +741,8 @@ class MainWindow:
         bg_canvas.bind("<ButtonRelease-1>", self._on_panel_release)
 
         # ── Content area ────────────────────────────────────────────────────
-        content_top = PANEL_TITLE_H + 8
-        content = tk.Frame(panel, bg=pale_bg)
+        content_top = PANEL_TITLE_H + 14
+        content = tk.Frame(panel, bg=APP_BG)
         content.place(
             x=PANEL_BODY_PAD, y=content_top,
             width=self._panel_w - PANEL_BODY_PAD * 2,
@@ -728,9 +752,9 @@ class MainWindow:
         panel._content_top = content_top
 
         if tab_cls in (InputTab, UploadTab):
-            tab = tab_cls(content, bg_color=pale_bg, edge_color=edge_color, main=self)
+            tab = tab_cls(content, bg_color=APP_BG, edge_color=edge_color, main=self)
         else:
-            tab = tab_cls(content, bg_color=pale_bg, edge_color=edge_color)
+            tab = tab_cls(content, bg_color=APP_BG, edge_color=edge_color)
         tab.frame.pack(fill=BOTH, expand=True)
 
         self._panel = panel
@@ -745,6 +769,10 @@ class MainWindow:
         sprite_left_x = self._px + SPRITE_PAD_X
         sidebar_w = self._sidebar.W if self._sidebar else (SIDEBAR_PAD * 2 + BTN_SIZE)
         x = sprite_left_x - sidebar_w - 8 - self._panel_w - 6
+        sw = self.root.winfo_screenwidth()
+        if x < 0:
+            x = self._px + self.window_w + 8
+        x = max(0, min(x, sw - self._panel_w))
         pet_center_y = self._py + SPRITE_PAD_Y + self.pet_h // 2
         y = pet_center_y - self._panel_h // 2
         sh = self.root.winfo_screenheight()
@@ -801,26 +829,26 @@ class MainWindow:
         )
 
         # Shortcut hint pill
-        hint_pill_w = 64
+        hint_pill_w = 72
         hint_x = text_x + f_title.measure(label) + 14
         canvas.create_polygon(
-            _round_rect_points(hint_x, cy - 11, hint_x + hint_pill_w, cy + 11, 10),
-            smooth=True, fill=SKY_PALE, outline=SKY_LIGHT, width=1,
+            _round_rect_points(hint_x, cy - 13, hint_x + hint_pill_w, cy + 13, 12),
+            smooth=True, fill=WHITE, outline=GLASS_EDGE, width=1,
         )
         canvas.create_text(
             hint_x + hint_pill_w // 2, cy, text=hint,
             fill=SKY_DARK, font=FONT_SHORTCUT,
         )
 
-        # Close button (24x24, lighter style)
-        cs = 24
+        # Close button (glass square)
+        cs = 30
         cx2 = w - PANEL_BODY_PAD - 4
         cx1 = cx2 - cs
         cy1 = (PANEL_TITLE_H - cs) // 2
         cy2 = cy1 + cs
         close_body_id = canvas.create_polygon(
-            _round_rect_points(cx1, cy1, cx2, cy2, 8),
-            smooth=True, fill="#f7fbff", outline="#dddddd", width=1,
+            _round_rect_points(cx1, cy1, cx2, cy2, 10),
+            smooth=True, fill=WHITE, outline=GLASS_EDGE, width=1,
         )
         close_x_id = canvas.create_text(
             (cx1 + cx2) // 2, (cy1 + cy2) // 2,
@@ -831,7 +859,7 @@ class MainWindow:
         canvas.create_line(
             PANEL_BODY_PAD, PANEL_TITLE_H,
             w - PANEL_BODY_PAD, PANEL_TITLE_H,
-            fill=DASH_LINE, width=1,
+            fill=GLASS_EDGE, width=1,
         )
 
         return self._PanelChrome(close_body_id, close_x_id, cx1, cx2, cy1, cy2)
@@ -859,7 +887,7 @@ class MainWindow:
             return
 
         # Reset close button appearance
-        canvas.itemconfig(p._close_body_id, fill="#f7fbff", outline="#dddddd")
+        canvas.itemconfig(p._close_body_id, fill=WHITE, outline=GLASS_EDGE)
         canvas.itemconfig(p._close_x_id, fill=TEXT_LIGHT)
 
         # Resize grip cursor
@@ -945,13 +973,14 @@ class MainWindow:
         # Regenerate PIL background
         bg_pil = _make_card_png(
             w, h, PANEL_RADIUS,
-            p._pale_bg, p._edge_color, p._edge_color, PANEL_SHADOW,
+            p._pale_bg, GLASS_EDGE, SOFT_SHADOW, PANEL_SHADOW,
         )
         self._panel_bg = ImageTk.PhotoImage(bg_pil)
 
         # Clear and redraw canvas
         canvas.delete("all")
         canvas.create_image(0, 0, anchor="nw", image=self._panel_bg)
+        _draw_soft_glow(canvas, w, h)
 
         # Redraw title bar, close button, separator
         chrome = self._draw_panel_chrome(canvas, w, p._label, p._emoji, p._hint)
@@ -1048,7 +1077,7 @@ class MainWindow:
         self._pending_paths = list(path_iter)
 
         # ── Chat panel (Toplevel) ───────────────────────────────────────
-        pw, ph = 480, 520
+        pw, ph = 560, 600
         panel = tk.Toplevel(self.root)
         panel.overrideredirect(True)
         panel.attributes("-topmost", True)
@@ -1059,37 +1088,41 @@ class MainWindow:
         py = max(0, ry - ph - 16)
         panel.geometry(f"{pw}x{ph}+{px}+{py}")
 
-        card = _shared_card_png(pw, ph, 20, "#ffffff", "#c0a8e0", "#c0a8e0", 6)
+        card = _shared_card_png(pw, ph, 22, APP_BG, GLASS_EDGE, SOFT_SHADOW, 8)
         self._chat_bg = ImageTk.PhotoImage(card)
 
         cv = tk.Canvas(panel, width=pw, height=ph,
                        bg=TRANSPARENT, highlightthickness=0, borderwidth=0)
         cv.pack()
         cv.create_image(0, 0, image=self._chat_bg, anchor="nw")
+        _draw_soft_glow(cv, pw, ph)
 
         # Title bar
-        cv.create_text(20, 22, text=f"讨论: {self._current_note.stem if self._current_note else '文件'}",
+        cv.create_text(24, 30, text=f"讨论: {self._current_note.stem if self._current_note else '文件'}",
                        anchor="w", fill=TEXT_MAIN, font=FONT_HEADING)
-        close_x = pw - 24
-        cv.create_text(close_x, 22, text="✕", fill=TEXT_LIGHT,
+        close_x = pw - 30
+        cv.create_text(close_x, 30, text="✕", fill=TEXT_LIGHT,
                        font=FONT_BODY_BOLD)
-        cv.create_line(16, 44, pw - 16, 44, fill=DASH_LINE, width=1)
+        cv.create_line(24, 58, pw - 24, 58, fill=GLASS_EDGE, width=1)
 
         # Text widget for LLM streaming output
-        text_frame = tk.Frame(panel, bg="#ffffff")
-        text_frame.place(x=12, y=52, width=pw - 24, height=ph - 148)
+        text_frame = tk.Frame(panel, bg=GLASS_EDGE)
+        text_frame.place(x=24, y=76, width=pw - 48, height=ph - 188)
+        text_inner = tk.Frame(text_frame, bg=WHITE)
+        text_inner.pack(fill="both", expand=True, padx=1, pady=1)
         text_widget = tk.Text(
-            text_frame, wrap="word", font=FONT_INPUT,
-            bg="#ffffff", fg=TEXT_MAIN, relief="flat",
-            state="disabled", padx=8, pady=6,
+            text_inner, wrap="word", font=FONT_INPUT,
+            bg=WHITE, fg=TEXT_MAIN, relief="flat",
+            state="disabled", padx=12, pady=10,
             spacing1=2, spacing3=2,
         )
-        sb = tk.Scrollbar(text_frame, command=text_widget.yview)
+        sb = tk.Scrollbar(text_inner, command=text_widget.yview)
         text_widget.config(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         text_widget.pack(side="left", fill="both", expand=True)
 
         ready = [False]
+        ingest_phase = ["chat"]  # chat | select | confirm
 
         # ── closures (defined before widgets that reference them) ──────
         def _dismiss():
@@ -1123,30 +1156,44 @@ class MainWindow:
         def _send():
             text = entry.get().strip()
             if not text:
+                if ingest_phase[0] in ("select", "confirm"):
+                    _confirm()
                 return
             _append_user(text)
             entry.delete(0, "end")
             user_q.put(text)
 
         def _confirm():
-            user_q.put("__CONFIRM__")
+            if ingest_phase[0] == "select":
+                _append_user("默认")
+                user_q.put("默认")
+                ingest_phase[0] = "chat"
+                confirm_btn.pack_forget()
+                skip_btn.pack_forget()
+            elif ingest_phase[0] == "confirm":
+                user_q.put("__CONFIRM__")
+                ingest_phase[0] = "chat"
+                confirm_btn.pack_forget()
+                skip_btn.pack_forget()
 
         def _skip():
             user_q.put("__CANCEL__")
 
         # ── widgets ───────────────────────────────────────────────────
-        input_frame = tk.Frame(panel, bg="#ffffff")
-        input_frame.place(x=12, y=ph - 88, width=pw - 24, height=32)
-        entry = tk.Entry(input_frame, font=FONT_INPUT, bg="#f8f6ff",
+        input_frame = tk.Frame(panel, bg=GLASS_EDGE)
+        input_frame.place(x=24, y=ph - 96, width=pw - 48, height=42)
+        input_inner = tk.Frame(input_frame, bg=WHITE)
+        input_inner.pack(fill="both", expand=True, padx=1, pady=1)
+        entry = tk.Entry(input_inner, font=FONT_INPUT, bg=WHITE,
                          fg=TEXT_MAIN, relief="flat", bd=0,
-                         highlightthickness=1, highlightbackground="#d4c8f0")
-        entry.pack(fill="both", expand=True, ipady=3)
+                         highlightthickness=0, insertbackground=SKY_DARK)
+        entry.pack(fill="both", expand=True, padx=12, pady=8)
         entry.bind("<Return>", lambda _e: _send())
 
-        btn_frame = tk.Frame(panel, bg="#ffffff")
-        btn_frame.place(x=12, y=ph - 50, width=pw - 24, height=32)
+        btn_frame = tk.Frame(panel, bg=APP_BG)
+        btn_frame.place(x=24, y=ph - 46, width=pw - 48, height=38)
 
-        send_btn = CartoonButton(btn_frame, "💬 发送", command=_send, kind="sky")
+        send_btn = CartoonButton(btn_frame, "💬 发送", command=_send, kind="sky", height=36)
         send_btn.pack(side="left", padx=(0, 6))
         confirm_btn = CartoonButton(btn_frame, "✅ 确认提取", command=_confirm, kind="mint")
         skip_btn = CartoonButton(btn_frame, "⏭ 跳过", command=_skip, kind="pink")
@@ -1157,7 +1204,7 @@ class MainWindow:
 
         # Close button click
         cv.tag_bind(
-            cv.create_rectangle(close_x - 12, 10, close_x + 12, 34,
+            cv.create_rectangle(close_x - 14, 14, close_x + 14, 46,
                                 fill="", outline=""),
             "<Button-1>", lambda _e: _on_close(),
         )
@@ -1176,9 +1223,31 @@ class MainWindow:
                         ok += 1
                     else:
                         err += 1
-                except Exception:
+                except Exception as exc:
                     _err_log.exception("discuss+ingest failed for %s", p)
+                    tb = traceback.format_exc()
+                    log_path = _cfg.BASE_DIR / "ingest_error.log"
+                    try:
+                        with log_path.open("a", encoding="utf-8") as f:
+                            f.write(
+                                "\n\n=== ingest failure "
+                                f"{time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+                                f"file: {p}\n"
+                                f"error: {type(exc).__name__}: {exc}\n\n"
+                                f"{tb}\n"
+                            )
+                    except Exception:
+                        _err_log.exception("failed to write ingest error log")
+                    detail = (
+                        "\n\n❌ 处理失败\n"
+                        f"文件: {p.name}\n"
+                        f"错误: {type(exc).__name__}: {exc}\n"
+                        f"日志: {log_path}\n"
+                    )
+                    chat_q.put(("__FATAL__", detail))
                     err += 1
+                    self.root.after(0, lambda: self._end_eat_animated(ok, err))
+                    return
             self.root.after(0, lambda: self._finish_ingest(ok, err))
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -1192,12 +1261,22 @@ class MainWindow:
                     break
                 if item == "__READY__":
                     ready[0] = True
+                    ingest_phase[0] = "confirm"
+                    confirm_btn.set_text("✅ 确认提取")
+                    confirm_btn.pack(side="right", padx=6)
+                    skip_btn.pack(side="right")
+                elif item == "__SELECT_DEFAULT__":
+                    ingest_phase[0] = "select"
+                    confirm_btn.set_text("✅ 使用默认")
                     confirm_btn.pack(side="right", padx=6)
                     skip_btn.pack(side="right")
                 elif item == "__DONE__":
                     return  # let worker thread call _finish_ingest
                 elif item == "__ERROR__":
                     _append_text("\n❌ 提取失败，关闭窗口重试\n")
+                    return
+                elif isinstance(item, tuple) and item[0] == "__FATAL__":
+                    _append_text(item[1], "status")
                     return
                 else:
                     _append_text(item)
@@ -1217,7 +1296,7 @@ class MainWindow:
 
     def _show_ingest_toast(self, ok: int, err: int) -> None:
         """Cartoon card toast above the pet, auto-dismiss after 5 s."""
-        bw, bh = 260, 90
+        bw, bh = 300, 108
         rx, ry = self.root.winfo_x(), self.root.winfo_y()
         bx = max(0, rx + self.window_w // 2 - bw // 2)
         by = max(0, ry - bh - 16)
@@ -1230,7 +1309,7 @@ class MainWindow:
         toast.geometry(f"{bw}x{bh}+{bx}+{by}")
 
         # ── PIL card with drop shadow (same style as panels) ────────────────
-        card = _shared_card_png(bw, bh, 16, "#fffdf5", "#e6c85c", "#e6c85c", 5)
+        card = _shared_card_png(bw, bh, 18, APP_BG, GLASS_EDGE, SOFT_SHADOW, 7)
         self._toast_bg_img = ImageTk.PhotoImage(card)
 
         cv = tk.Canvas(
@@ -1239,15 +1318,16 @@ class MainWindow:
         )
         cv.pack()
         cv.create_image(0, 0, image=self._toast_bg_img, anchor="nw")
+        _draw_soft_glow(cv, bw, bh)
 
         cv.create_text(
-            bw // 2, 28, text="Wiki 更新完成",
+            bw // 2, 34, text="Wiki 更新完成",
             fill=TEXT_MAIN, font=FONT_HEADING,
         )
 
         status = f"ok: {ok} 成功" + (f", {err} 失败" if err else "")
         cv.create_text(
-            bw // 2, 56, text=status,
+            bw // 2, 66, text=status,
             fill=TEXT_LIGHT, font=FONT_HINT,
         )
 

@@ -6,7 +6,8 @@ from converter.text_converter import text_to_markdown
 from storage.note_store import save_note
 from llm.wiki_engine import background_ingest
 from ui.cartoon_widgets import (
-    WHITE, SKY_LIGHT, cartoon_label, cartoon_entry, cartoon_textarea, CartoonButton,
+    WHITE, SKY_LIGHT, SPACING_MD, SPACING_LG, web_section,
+    cartoon_entry, cartoon_textarea, CartoonButton,
 )
 
 
@@ -21,32 +22,38 @@ class InputTab:
 
     def _build(self) -> None:
         self.frame.grid_columnconfigure(0, weight=1)
-        # Rows: 0 hint, 1 title input, 2 hint, 3 textarea (elastic), 4 save btn
-        self.frame.grid_rowconfigure(3, weight=1)
+        self.frame.grid_rowconfigure(1, weight=1)
 
-        cartoon_label(self.frame, "标题（可选）", kind="hint").grid(
-            row=0, column=0, sticky="w", padx=2, pady=(4, 2),
+        title_section = web_section(
+            self.frame, "标题", bg_color=self._bg,
+            border_color=self._edge, accent="#7C3AED",
         )
+        title_section.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, SPACING_LG))
+        title_section.content.grid_columnconfigure(0, weight=1)
 
         self.title_border = cartoon_entry(
-            self.frame, placeholder="给笔记起个名字...",
+            title_section.content, placeholder="给笔记起个名字...",
             border_color=self._edge,
         )
-        self.title_border.grid(row=1, column=0, sticky="ew", padx=2)
+        self.title_border.grid(row=0, column=0, sticky="ew")
 
-        cartoon_label(self.frame, "粘贴或键入内容", kind="hint").grid(
-            row=2, column=0, sticky="w", padx=2, pady=(10, 2),
+        content_section = web_section(
+            self.frame, "粘贴或键入内容", bg_color=self._bg,
+            border_color=self._edge, accent="#7C3AED",
         )
+        content_section.grid(row=1, column=0, sticky="nsew", padx=0, pady=(0, SPACING_LG))
+        content_section.content.grid_columnconfigure(0, weight=1)
+        content_section.content.grid_rowconfigure(0, weight=1)
 
         self.text_border = cartoon_textarea(
-            self.frame, height=8, border_color=self._edge,
+            content_section.content, height=10, border_color=self._edge,
         )
-        self.text_border.grid(row=3, column=0, sticky="nsew", padx=2)
+        self.text_border.grid(row=0, column=0, sticky="nsew")
 
         CartoonButton(
             self.frame, "💾 保存到知识库", command=self._on_save,
-            kind="sky", height=44,
-        ).grid(row=4, column=0, sticky="ew", padx=2, pady=(10, 4))
+            kind="sky", height=48,
+        ).grid(row=2, column=0, sticky="ew", padx=0, pady=(0, SPACING_MD))
 
     def _on_save(self) -> None:
         content = self.text_border.text.get("1.0", tk.END).strip()

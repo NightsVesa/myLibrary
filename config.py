@@ -41,4 +41,7 @@ WIKI_CANDIDATE_TOP_N = int(os.environ.get("WIKI_CANDIDATE_TOP_N", "20"))
 WIKI_DEEP_READ_MAX = int(os.environ.get("WIKI_DEEP_READ_MAX", "8"))
 WIKI_DEEP_READ_MAX_CHARS = int(os.environ.get("WIKI_DEEP_READ_MAX_CHARS", "12000"))
 
+WIKI_LINT_MAX_CHARS = int(os.environ.get("WIKI_LINT_MAX_CHARS", "16000"))
+WIKI_LINT_STALE_DAYS = int(os.environ.get("WIKI_LINT_STALE_DAYS", "90"))
+
 APP_TITLE = "知识库助手"

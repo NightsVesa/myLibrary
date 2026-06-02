@@ -1792,6 +1792,7 @@ def discuss_and_ingest(
 
     display_text = _format_candidates_for_display(candidates)
     chat_q.put(display_text)
+    chat_q.put("__SELECT_DEFAULT__")
 
     # ── Step 3: User focus selection ───────────────────────────────────
     user_selection = user_q.get()

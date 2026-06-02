@@ -3,20 +3,27 @@ from pathlib import Path
 
 from search.grep_search import search_notes
 from ui.cartoon_widgets import (
-    WHITE, SKY_LIGHT, SKY_DARK, SKY_PALE, TEXT_MAIN, TEXT_LIGHT,
-    FONT_BODY, FONT_BODY_BOLD, FONT_HEADING, FONT_HINT, FONT_TITLE, FONT_MONO,
-    cartoon_label, cartoon_entry, CartoonButton,
+    WHITE, SKY_LIGHT, SKY_DARK, TEXT_MAIN, TEXT_LIGHT,
+    FONT_BODY, FONT_BODY_BOLD, FONT_MONO,
+    APP_BG, GLASS_EDGE, SOFT_SHADOW, AMBER_SOFT, PURPLE_SOFT,
+    SPACING_SM, SPACING_MD, SPACING_LG, web_label, web_section,
+    cartoon_entry, CartoonButton,
     _round_rect_points, PINK,
 )
 from ui.markdown_render import render_markdown_into, highlight_query
 
 # Reader window dimensions
-READER_W, READER_H = 960, 760
+READER_W, READER_H = 1040, 780
 READER_RADIUS = 28
-READER_SHADOW = 6
-READER_TITLE_H = 76
-READER_PAD = 24
+READER_SHADOW = 8
+READER_TITLE_H = 84
+READER_PAD = 28
 TRANSPARENT = "#ff00ff"
+
+
+def _draw_reader_glow(canvas, w, h, *, tags="chrome"):
+    canvas.create_oval(max(22, w - 300), 18, w - 34, 220, fill=AMBER_SOFT, outline="", tags=tags)
+    canvas.create_oval(22, 18, min(300, w - 34), 220, fill=PURPLE_SOFT, outline="", tags=tags)
 
 
 class SearchTab:
@@ -31,20 +38,18 @@ class SearchTab:
         self._build()
 
     def _build(self) -> None:
-        # Grid layout so the preview row can grab all leftover height
         self.frame.grid_columnconfigure(0, weight=1)
-        for row in (0, 1, 2, 3, 4):
-            self.frame.grid_rowconfigure(row, weight=0)
-        self.frame.grid_rowconfigure(5, weight=1)   # preview row = elastic
+        self.frame.grid_rowconfigure(2, weight=1)
 
-        # Row 0 — search-row label
-        cartoon_label(self.frame, "搜索关键词", kind="hint").grid(
-            row=0, column=0, sticky="w", padx=2, pady=(4, 2),
+        search_section = web_section(
+            self.frame, "搜索关键词", bg_color=self._bg,
+            border_color=self._edge, accent="#8B5CF6",
         )
+        search_section.grid(row=0, column=0, sticky="ew", pady=(0, SPACING_LG))
+        search_section.content.grid_columnconfigure(0, weight=1)
 
-        # Row 1 — search input + button
-        search_row = tk.Frame(self.frame, bg=self._bg)
-        search_row.grid(row=1, column=0, sticky="ew", padx=2)
+        search_row = tk.Frame(search_section.content, bg=search_section.content.cget("bg"))
+        search_row.grid(row=0, column=0, sticky="ew")
         search_row.grid_columnconfigure(0, weight=1)
         search_row.grid_columnconfigure(1, weight=0, minsize=58)
 
@@ -57,51 +62,63 @@ class SearchTab:
 
         CartoonButton(
             search_row, "🔍", command=self._on_search,
-            kind="sky", width=52, height=40,
-        ).grid(row=0, column=1, padx=(6, 0), sticky="e")
+            kind="sky", width=58, height=44,
+        ).grid(row=0, column=1, padx=(SPACING_MD, 0), sticky="e")
 
-        # Row 2 — results header
-        self.result_header = cartoon_label(self.frame, "结果", kind="hint")
-        self.result_header.grid(row=2, column=0, sticky="w", padx=2, pady=(8, 2))
+        result_section = web_section(
+            self.frame, None, bg_color=self._bg,
+            border_color=self._edge, accent="#8B5CF6",
+        )
+        result_section.grid(row=1, column=0, sticky="ew", pady=(0, SPACING_LG))
+        result_section.content.grid_columnconfigure(0, weight=1)
+        self.result_header = web_label(
+            result_section.content, "结果", kind="section", accent="#8B5CF6",
+        )
+        self.result_header.grid(row=0, column=0, sticky="w", pady=(0, SPACING_SM))
 
-        # Row 3 — fixed-height results listbox (5 rows)
-        list_border = tk.Frame(self.frame, bg=self._edge)
-        list_border.grid(row=3, column=0, sticky="ew", padx=2)
-        list_inner = tk.Frame(list_border, bg=self._bg)
-        list_inner.pack(fill="both", expand=True, padx=2, pady=(2, 3))
+        list_border = tk.Frame(result_section.content, bg=self._edge)
+        list_border.grid(row=1, column=0, sticky="ew")
+        list_inner = tk.Frame(list_border, bg=WHITE)
+        list_inner.pack(fill="both", expand=True, padx=1, pady=1)
 
         scrollbar = tk.Scrollbar(list_inner, orient="vertical")
         self.results_list = tk.Listbox(
             list_inner, yscrollcommand=scrollbar.set,
             font=FONT_MONO, selectmode=tk.SINGLE,
             height=4, activestyle="dotbox",
-            bg=self._bg, fg=TEXT_MAIN,
+            bg=WHITE, fg=TEXT_MAIN,
             selectbackground=WHITE, selectforeground=SKY_DARK,
             relief="flat", borderwidth=0, highlightthickness=0,
         )
         scrollbar.config(command=self.results_list.yview)
-        self.results_list.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=2)
+        self.results_list.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=6)
         scrollbar.pack(side="right", fill="y", pady=2)
         self.results_list.bind("<<ListboxSelect>>", self._on_select)
         self.results_list.bind("<Double-Button-1>", lambda _e: self._open_reader())
 
-        # Row 4 — preview header + expand button
-        prev_head = tk.Frame(self.frame, bg=self._bg)
-        prev_head.grid(row=4, column=0, sticky="ew", padx=2, pady=(8, 2))
+        preview_section = web_section(
+            self.frame, None, bg_color=self._bg,
+            border_color=self._edge, accent="#8B5CF6",
+        )
+        preview_section.grid(row=2, column=0, sticky="nsew", pady=(0, SPACING_MD))
+        preview_section.content.grid_columnconfigure(0, weight=1)
+        preview_section.content.grid_rowconfigure(1, weight=1)
+
+        prev_head = tk.Frame(preview_section.content, bg=preview_section.content.cget("bg"))
+        prev_head.grid(row=0, column=0, sticky="ew", pady=(0, SPACING_SM))
         prev_head.grid_columnconfigure(0, weight=1)
-        cartoon_label(prev_head, "Markdown 预览", kind="hint").grid(
+        web_label(prev_head, "Markdown 预览", kind="section", accent="#8B5CF6").grid(
             row=0, column=0, sticky="w",
         )
         CartoonButton(
             prev_head, "📖", command=self._open_reader,
-            kind="sky", width=44, height=30,
+            kind="sky", width=48, height=34,
         ).grid(row=0, column=1, sticky="e")
 
-        # Row 5 — elastic preview area (grabs all remaining height)
-        prev_border = tk.Frame(self.frame, bg=self._edge)
-        prev_border.grid(row=5, column=0, sticky="nsew", padx=2, pady=(0, 4))
-        prev_inner = tk.Frame(prev_border, bg=self._bg)
-        prev_inner.pack(fill="both", expand=True, padx=2, pady=(2, 3))
+        prev_border = tk.Frame(preview_section.content, bg=self._edge)
+        prev_border.grid(row=1, column=0, sticky="nsew")
+        prev_inner = tk.Frame(prev_border, bg=WHITE)
+        prev_inner.pack(fill="both", expand=True, padx=1, pady=1)
 
         prev_scroll = tk.Scrollbar(prev_inner, orient="vertical")
         self.preview_text = tk.Text(
@@ -109,9 +126,9 @@ class SearchTab:
             font=FONT_BODY,
             yscrollcommand=prev_scroll.set,
             state=tk.DISABLED,
-            bg=self._bg, fg=TEXT_MAIN,
+            bg=WHITE, fg=TEXT_MAIN,
             relief="flat", borderwidth=0, highlightthickness=0,
-            padx=8, pady=6,
+            padx=12, pady=10,
         )
         prev_scroll.config(command=self.preview_text.yview)
         self.preview_text.pack(side="left", fill="both", expand=True)
@@ -279,8 +296,8 @@ class _ReaderWindow:
         self.root = root
         self.path = path
         self.query = query
-        self.bg_color = bg_color
-        self.edge_color = edge_color
+        self.bg_color = APP_BG
+        self.edge_color = GLASS_EDGE
         self.w = READER_W
         self.h = READER_H
         self._mode = None    # None / "drag" / "resize"
@@ -326,15 +343,17 @@ class _ReaderWindow:
         self.canvas = c
 
     def _build_body(self):
-        body = tk.Frame(self.win, bg=self.bg_color)
-        scroll = tk.Scrollbar(body, orient="vertical")
+        body = tk.Frame(self.win, bg=GLASS_EDGE)
+        inner = tk.Frame(body, bg=WHITE)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        scroll = tk.Scrollbar(inner, orient="vertical")
         text = tk.Text(
-            body, wrap=tk.WORD,
+            inner, wrap=tk.WORD,
             font=self.DEFAULT_FONT_BODY,
             yscrollcommand=scroll.set,
-            bg=self.bg_color, fg=TEXT_MAIN,
+            bg=WHITE, fg=TEXT_MAIN,
             relief="flat", borderwidth=0, highlightthickness=0,
-            padx=12, pady=10,
+            padx=16, pady=14,
         )
         scroll.config(command=text.yview)
         text.pack(side="left", fill="both", expand=True)
@@ -441,20 +460,21 @@ class _ReaderWindow:
         # Bottom drop-shadow plate
         c.create_polygon(
             _round_rect_points(0, READER_SHADOW, w, h, READER_RADIUS),
-            smooth=True, fill=self.edge_color, outline="", tags="chrome",
+            smooth=True, fill=SOFT_SHADOW, outline="", tags="chrome",
         )
         # Card body
         c.create_polygon(
             _round_rect_points(0, 0, w, h - READER_SHADOW, READER_RADIUS),
             smooth=True, fill=self.bg_color,
-            outline=self.edge_color, width=3, tags="chrome",
+            outline=self.edge_color, width=1, tags="chrome",
         )
+        _draw_reader_glow(c, w, h)
 
         # Title bar — file name on row 1, path on row 2 (well-separated)
         from tkinter import font as tkfont
         title_x = READER_PAD
-        name_y = 26
-        path_y = 54
+        name_y = 30
+        path_y = 60
         f_emoji = tkfont.Font(font=("Segoe UI Emoji", 14))
         c.create_text(
             title_x, name_y, text="📄", anchor="w",
@@ -463,7 +483,7 @@ class _ReaderWindow:
         emoji_w = f_emoji.measure("📄")
         c.create_text(
             title_x + emoji_w + 8, name_y, text=self.path.name, anchor="w",
-            font=("Microsoft YaHei", 14, "bold"), fill=TEXT_MAIN, tags="chrome",
+            font=("Microsoft YaHei", 15, "bold"), fill=TEXT_MAIN, tags="chrome",
         )
         c.create_text(
             title_x, path_y, text=str(self.path), anchor="w",
@@ -478,7 +498,7 @@ class _ReaderWindow:
         self._close_box = (cx1, ccy1, cx2, ccy2)
         self._close_body_id = c.create_polygon(
             _round_rect_points(cx1, ccy1, cx2, ccy2, 10),
-            smooth=True, fill="#f7fbff", outline="#dddddd", width=2,
+            smooth=True, fill=WHITE, outline=GLASS_EDGE, width=1,
             tags="chrome",
         )
         self._close_x_id = c.create_text(
@@ -490,7 +510,7 @@ class _ReaderWindow:
         c.create_line(
             READER_PAD, READER_TITLE_H + 10,
             w - READER_PAD, READER_TITLE_H + 10,
-            fill="#F3F4F6", width=1, tags="chrome",
+            fill=GLASS_EDGE, width=1, tags="chrome",
         )
 
         # Resize handle (bottom-right corner — three short diagonal hatches)
@@ -504,7 +524,7 @@ class _ReaderWindow:
             c.create_line(
                 hx2 - step, hy2,
                 hx2,       hy2 - step,
-                fill="#a8a8b8", width=2, capstyle="round", tags="chrome",
+                fill="#C4B5FD", width=2, capstyle="round", tags="chrome",
             )
 
     # ── event handling ─────────────────────────────────────────────────────
@@ -543,15 +563,15 @@ class _ReaderWindow:
             self.canvas.itemconfig(self._close_x_id, fill=PINK)
             self.canvas.config(cursor="hand2")
         elif self._hit_handle(e.x, e.y):
-            self.canvas.itemconfig(self._close_body_id, fill="#f7fbff", outline="#dddddd")
+            self.canvas.itemconfig(self._close_body_id, fill=WHITE, outline=GLASS_EDGE)
             self.canvas.itemconfig(self._close_x_id, fill=TEXT_LIGHT)
             self.canvas.config(cursor="bottom_right_corner")
         elif e.y < READER_TITLE_H:
-            self.canvas.itemconfig(self._close_body_id, fill="#f7fbff", outline="#dddddd")
+            self.canvas.itemconfig(self._close_body_id, fill=WHITE, outline=GLASS_EDGE)
             self.canvas.itemconfig(self._close_x_id, fill=TEXT_LIGHT)
             self.canvas.config(cursor="fleur")
         else:
-            self.canvas.itemconfig(self._close_body_id, fill="#f7fbff", outline="#dddddd")
+            self.canvas.itemconfig(self._close_body_id, fill=WHITE, outline=GLASS_EDGE)
             self.canvas.itemconfig(self._close_x_id, fill=TEXT_LIGHT)
             self.canvas.config(cursor="arrow")
 
@@ -608,9 +628,9 @@ class _ReaderWindow:
             return "break"
 
         bar = tk.Frame(self.win, bg=WHITE, bd=0,
-                       highlightbackground=self.edge_color, highlightthickness=2)
+                       highlightbackground=GLASS_EDGE, highlightthickness=1)
         bar.place(relx=1.0, x=-READER_PAD - 4, y=READER_TITLE_H + 18,
-                  anchor="ne", width=340, height=38)
+                  anchor="ne", width=360, height=42)
 
         # Pack right-anchored controls FIRST so they always claim their space;
         # the entry then fills whatever remains in the middle.

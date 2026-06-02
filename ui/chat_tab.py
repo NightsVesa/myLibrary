@@ -8,8 +8,8 @@ from llm.client import LLMConfig
 from llm.wiki_engine import QueryResultMeta, query_wiki, save_query_answer_as_wiki_page
 from ui.cartoon_widgets import (
     WHITE, SKY_LIGHT, SKY_DARK, TEXT_MAIN, TEXT_LIGHT,
-    FONT_BODY, FONT_BODY_BOLD, FONT_HINT,
-    cartoon_label, cartoon_entry, CartoonButton,
+    FONT_BODY, FONT_BODY_BOLD, FONT_HINT, SPACING_SM, SPACING_MD, SPACING_LG,
+    web_label, web_section, cartoon_entry, CartoonButton,
 )
 import config as app_config
 
@@ -32,26 +32,29 @@ class ChatTab:
         self.frame.grid_rowconfigure(1, weight=1)
 
         header = tk.Frame(self.frame, bg=self._bg)
-        header.grid(row=0, column=0, sticky="ew", padx=2, pady=(4, 2))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, SPACING_LG))
         header.grid_columnconfigure(0, weight=1)
-        cartoon_label(header, "向知识库提问", kind="hint").grid(
+        web_label(header, "向知识库提问", kind="section", accent="#F59E0B").grid(
             row=0, column=0, sticky="w",
         )
         CartoonButton(
             header, "📖", command=self._open_reader,
-            kind="orange", width=44, height=30,
+            kind="orange", width=48, height=34,
         ).grid(row=0, column=1, sticky="e")
         self.save_btn = CartoonButton(
             header, "💾", command=self._save_last_answer,
-            kind="orange", width=44, height=30,
+            kind="orange", width=48, height=34,
         )
-        self.save_btn.grid(row=0, column=2, sticky="e", padx=(4, 0))
+        self.save_btn.grid(row=0, column=2, sticky="e", padx=(SPACING_SM, 0))
 
-        # Chat history
-        hist_border = tk.Frame(self.frame, bg=self._edge)
-        hist_border.grid(row=1, column=0, sticky="nsew", padx=2)
-        hist_inner = tk.Frame(hist_border, bg=self._bg)
-        hist_inner.pack(fill="both", expand=True, padx=2, pady=(2, 3))
+        hist_section = web_section(
+            self.frame, None, bg_color=self._bg,
+            border_color=self._edge, accent="#F59E0B",
+        )
+        hist_section.grid(row=1, column=0, sticky="nsew", pady=(0, SPACING_LG))
+        hist_inner = hist_section.content
+        hist_inner.grid_columnconfigure(0, weight=1)
+        hist_inner.grid_rowconfigure(0, weight=1)
 
         hist_scroll = tk.Scrollbar(hist_inner, orient="vertical")
         self.history = tk.Text(
@@ -59,11 +62,11 @@ class ChatTab:
             yscrollcommand=hist_scroll.set, state=tk.DISABLED,
             bg=self._bg, fg=TEXT_MAIN,
             relief="flat", borderwidth=0, highlightthickness=0,
-            padx=8, pady=6,
+            padx=12, pady=10,
         )
         hist_scroll.config(command=self.history.yview)
-        self.history.pack(side="left", fill="both", expand=True)
-        hist_scroll.pack(side="right", fill="y")
+        self.history.grid(row=0, column=0, sticky="nsew")
+        hist_scroll.grid(row=0, column=1, sticky="ns")
 
         self.history.tag_config("user_name", foreground=SKY_DARK,
                                 font=FONT_BODY_BOLD)
@@ -78,7 +81,7 @@ class ChatTab:
 
         # Input row
         input_row = tk.Frame(self.frame, bg=self._bg)
-        input_row.grid(row=2, column=0, sticky="ew", padx=2, pady=(6, 4))
+        input_row.grid(row=2, column=0, sticky="ew", pady=(0, SPACING_MD))
         input_row.grid_columnconfigure(0, weight=1)
 
         self.q_border = cartoon_entry(
@@ -90,8 +93,8 @@ class ChatTab:
 
         CartoonButton(
             input_row, "💬", command=self._on_send,
-            kind="orange", width=52, height=40,
-        ).grid(row=0, column=1, padx=(6, 0), sticky="e")
+            kind="orange", width=58, height=44,
+        ).grid(row=0, column=1, padx=(SPACING_MD, 0), sticky="e")
 
     def _append_text(self, text: str, tag: str = "") -> None:
         self.history.config(state=tk.NORMAL)
