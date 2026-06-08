@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import sys
 import warnings
 
 import pytest
@@ -41,6 +42,50 @@ def test_quiet_paddle_init_suppresses_known_noise(capfd):
     assert "ccache" not in err
     assert "urllib3" not in err
     assert "用提供的模式无法找到文件" not in err
+
+
+def test_bundled_ocr_model_dirs_uses_pyinstaller_models(tmp_path, monkeypatch):
+    root = tmp_path / ".paddleocr" / "whl"
+    for model_dir in (
+        root / "det" / "ch" / "ch_PP-OCRv4_det_infer",
+        root / "rec" / "ch" / "ch_PP-OCRv4_rec_infer",
+        root / "cls" / "ch_ppocr_mobile_v2.0_cls_infer",
+    ):
+        model_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    dirs = ocr_converter._bundled_ocr_model_dirs()
+
+    assert dirs["det_model_dir"].endswith("ch_PP-OCRv4_det_infer")
+    assert dirs["rec_model_dir"].endswith("ch_PP-OCRv4_rec_infer")
+    assert dirs["cls_model_dir"].endswith("ch_ppocr_mobile_v2.0_cls_infer")
+
+
+def test_bundled_ocr_model_dirs_returns_empty_without_bundle(monkeypatch):
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+
+    assert ocr_converter._bundled_ocr_model_dirs() == {}
+
+
+def test_ascii_ocr_model_root_copies_non_ascii_bundle(tmp_path, monkeypatch):
+    source = tmp_path / "中文路径" / "whl"
+    model_file = (
+        source
+        / "det"
+        / "ch"
+        / "ch_PP-OCRv4_det_infer"
+        / "inference.pdmodel"
+    )
+    model_file.parent.mkdir(parents=True)
+    model_file.write_text("model", encoding="utf-8")
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+    monkeypatch.setenv("PUBLIC", str(tmp_path / "Public"))
+
+    root = ocr_converter._ascii_ocr_model_root(source)
+
+    assert "中文路径" not in str(root)
+    assert (root / "det" / "ch" / "ch_PP-OCRv4_det_infer" / "inference.pdmodel").exists()
 
 
 def test_image_to_markdown_uses_ocr_lines(tmp_path, monkeypatch):

@@ -3,6 +3,9 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import shutil
+import sys
+import tempfile
 import threading
 import warnings
 from pathlib import Path
@@ -24,6 +27,57 @@ _ocr_lock = threading.Lock()
 
 class OCRUnavailableError(RuntimeError):
     """Raised when OCR dependencies are unavailable."""
+
+
+def _is_ascii_path(path: Path) -> bool:
+    try:
+        str(path).encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _ocr_cache_bases() -> list[Path]:
+    bases: list[Path] = []
+    for key in ("PROGRAMDATA", "PUBLIC"):
+        value = os.environ.get(key)
+        if value:
+            bases.append(Path(value) / "myLibrary" / "paddleocr")
+    bases.append(Path(tempfile.gettempdir()) / "myLibrary-paddleocr")
+    return bases
+
+
+def _ascii_ocr_model_root(root: Path) -> Path:
+    if os.name != "nt" or _is_ascii_path(root):
+        return root
+
+    for base in _ocr_cache_bases():
+        if not _is_ascii_path(base):
+            continue
+        dest = base / "whl"
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(root, dest, dirs_exist_ok=True)
+            return dest
+        except OSError:
+            continue
+    return root
+
+
+def _bundled_ocr_model_dirs() -> dict[str, str]:
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        return {}
+
+    root = _ascii_ocr_model_root(Path(base) / ".paddleocr" / "whl")
+    dirs = {
+        "det_model_dir": root / "det" / "ch" / "ch_PP-OCRv4_det_infer",
+        "rec_model_dir": root / "rec" / "ch" / "ch_PP-OCRv4_rec_infer",
+        "cls_model_dir": root / "cls" / "ch_ppocr_mobile_v2.0_cls_infer",
+    }
+    if not all(path.exists() for path in dirs.values()):
+        return {}
+    return {key: str(path) for key, path in dirs.items()}
 
 
 @contextlib.contextmanager
@@ -76,18 +130,21 @@ def _get_ocr() -> Any:
                 "图片 OCR 需要安装 paddleocr 和 paddlepaddle"
             ) from exc
 
+        model_dirs = _bundled_ocr_model_dirs()
+        base_kwargs = {"lang": "ch", **model_dirs}
+
         try:
             with _quiet_paddle_init():
                 _ocr_instance = PaddleOCR(
-                    use_angle_cls=True, lang="ch", show_log=False,
+                    use_angle_cls=True, show_log=False, **base_kwargs,
                 )
         except (TypeError, ValueError):
             try:
                 with _quiet_paddle_init():
-                    _ocr_instance = PaddleOCR(lang="ch", show_log=False)
+                    _ocr_instance = PaddleOCR(show_log=False, **base_kwargs)
             except (TypeError, ValueError):
                 with _quiet_paddle_init():
-                    _ocr_instance = PaddleOCR(lang="ch")
+                    _ocr_instance = PaddleOCR(**base_kwargs)
         except Exception as exc:
             raise OCRUnavailableError(f"OCR 初始化失败: {exc}") from exc
         return _ocr_instance

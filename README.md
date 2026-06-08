@@ -4,23 +4,23 @@ Windows 桌面宠物知识库应用。它把一只悬浮在桌面的三角龙变
 
 ## 宠物预览
 
-项目实际使用的宠物精灵图位于 `assets/`，运行时通过 Windows 透明色 `#ff00ff` 抠掉背景。
+项目实际使用的宠物精灵图位于 `assets/`，运行时通过 Windows 透明色 `#ff00ff` 抠掉背景。下面是同一批精灵导出的白底预览图，避免 README 里出现透明色背景。
 
 <p>
-  <img src="assets/pet_idle_00.png" width="150" alt="idle pet">
-  <img src="assets/pet_happy_00.png" width="150" alt="happy pet">
-  <img src="assets/pet_eat_00.png" width="150" alt="eat pet">
-  <img src="assets/pet_attack_00.png" width="150" alt="attack pet">
-  <img src="assets/pet_sleep_00.png" width="150" alt="sleep pet">
+  <img src="assets/readme_pet_idle.png" width="150" alt="idle pet">
+  <img src="assets/readme_pet_happy.png" width="150" alt="happy pet">
+  <img src="assets/readme_pet_eat.png" width="150" alt="eat pet">
+  <img src="assets/readme_pet_attack.png" width="150" alt="attack pet">
+  <img src="assets/readme_pet_sleep.png" width="150" alt="sleep pet">
 </p>
 
-| 状态 | 实际帧 |
+| 状态 | 白底预览 |
 | --- | --- |
-| 待机 | <img src="assets/pet_idle_00.png" width="120" alt="idle frame"> |
-| 开心 | <img src="assets/pet_happy_00.png" width="120" alt="happy frame"> |
-| 进食 | <img src="assets/pet_eat_00.png" width="120" alt="eat frame"> |
-| 攻击/拖拽 | <img src="assets/pet_attack_00.png" width="120" alt="attack frame"> |
-| 睡觉 | <img src="assets/pet_sleep_00.png" width="120" alt="sleep frame"> |
+| 待机 | <img src="assets/readme_pet_idle.png" width="120" alt="idle frame"> |
+| 开心 | <img src="assets/readme_pet_happy.png" width="120" alt="happy frame"> |
+| 进食 | <img src="assets/readme_pet_eat.png" width="120" alt="eat frame"> |
+| 攻击/拖拽 | <img src="assets/readme_pet_attack.png" width="120" alt="attack frame"> |
+| 睡觉 | <img src="assets/readme_pet_sleep.png" width="120" alt="sleep frame"> |
 
 ## 功能
 
@@ -85,23 +85,35 @@ python -m pytest tests/
 python -m pytest tests/test_wiki_engine.py -v
 python -m pytest tests/test_grep_search.py::test_case_insensitive -v
 
-# 打包 Windows exe，输出到 dist/知识库助手/
+# 打包轻量 Windows exe，输出到 dist/知识库助手/
 pyinstaller build.spec --noconfirm
+
+# 打包 OCR Windows exe，输出到 dist/知识库助手-OCR/
+pyinstaller build_ocr.spec --noconfirm
 ```
 
 ## Release 1.0
 
-Release 1.0 是 Windows one-folder 版本，GitHub Release 附件使用 zip 包发布。解压后运行：
+Release 1.0 提供两个 Windows one-folder zip 附件：
+
+| 附件 | OCR | 适合 |
+| --- | --- | --- |
+| `myLibrary-release1.0-lite-windows.zip` | 不包含 | 只需要记录、搜索、wiki、问答和图谱，优先小体积 |
+| `myLibrary-release1.0-ocr-windows.zip` | 包含 PaddleOCR、PaddlePaddle 和中文 OCR 模型 | 需要图片、扫描 PDF、文档内图片识别 |
+
+解压后运行：
 
 ```text
 知识库助手/知识库助手.exe
+知识库助手-OCR/知识库助手-OCR.exe
 ```
 
 打包版行为：
 
 - `assets/` 被打进 `_internal`，包含本项目实际使用的宠物帧。
 - `notes/`、`wiki/`、`.env` 位于 exe 同级目录，方便用户写入和迁移。
-- 默认不打包 PaddleOCR / paddlepaddle；需要 OCR 时建议源码运行或单独做 OCR 构建配置。
+- 轻量包不打包 PaddleOCR / paddlepaddle；OCR 包内置中文检测、识别和方向分类模型，用户不需要再手动安装 OCR 依赖。
+- OCR 包首次识别时如果发现模型路径包含非 ASCII 字符，会自动复制模型到 `C:\ProgramData\myLibrary\paddleocr\` 等 ASCII 缓存目录，避免 Paddle 在中文路径下打不开模型文件。
 
 ## 目录结构
 
