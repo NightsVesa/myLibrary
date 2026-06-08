@@ -44,6 +44,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+依赖清单主文件为 `requirements.txt`，同时提供 `requirement.txt` 作为同内容兼容文件。
+
 可选 OCR 支持较大，默认不放进基础安装：
 
 ```bash
