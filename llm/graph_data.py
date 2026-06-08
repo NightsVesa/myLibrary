@@ -149,3 +149,8 @@ def parse_wiki_graph(wiki_dir: Path) -> Graph:
         ))
 
     return Graph(nodes, edges)
+
+
+def get_incoming_edges(graph: Graph, node_id: str) -> list[Edge]:
+    """Return all edges whose target matches *node_id*."""
+    return [e for e in graph.edges if e.target == node_id]

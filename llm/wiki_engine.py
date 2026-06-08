@@ -9,8 +9,34 @@ import queue
 import re as _re
 import threading
 
+import os as _os
+
 import config as app_config
-from llm.client import LLMConfig, Message, chat, chat_stream
+from search.grep_search import tokenize
+
+# ── mtime-based file content cache ────────────────────────────────────────
+_wiki_cache: dict[Path, tuple[float, str]] = {}
+_WIKI_CACHE_MAX = 300
+_wiki_mutation_lock = threading.RLock()
+
+
+def _cached_wiki_read(path: Path) -> str:
+    try:
+        mtime = _os.path.getmtime(path)
+    except OSError:
+        return ""
+    entry = _wiki_cache.get(path)
+    if entry is not None and entry[0] == mtime:
+        return entry[1]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    if len(_wiki_cache) >= _WIKI_CACHE_MAX:
+        _wiki_cache.pop(next(iter(_wiki_cache)))
+    _wiki_cache[path] = (mtime, text)
+    return text
+from llm.client import LLMConfig, Message, chat, chat_stream, load_llm_config
 from llm.prompts import (
     INGEST_DISCUSS_SYSTEM,
     ingest_extract_system,
@@ -192,6 +218,83 @@ def _parse_write_plan(raw: str) -> list[IngestWriteAction]:
     return actions
 
 
+def _add_source_link_only(
+    target: Path,
+    source_filename: str,
+    *,
+    from_filename: str,
+) -> None:
+    """Append a source link without modifying prose.
+
+    Used for source_check and light_link actions: keeps the page's prose
+    intact and only updates the ## Sources section.
+    """
+    existing_sources = _collect_sources_from_page(target)
+    sources_section = _build_sources_section(
+        existing_sources, source_filename, from_filename=from_filename,
+    )
+    text = target.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    cut_idx = len(lines)
+    for i, line in enumerate(lines):
+        if line.strip() in _MANAGED_HEADINGS:
+            cut_idx = i
+            break
+    prose = "\n".join(lines[:cut_idx]).rstrip()
+    target.write_text(prose + "\n\n" + sources_section, encoding="utf-8")
+
+
+def _write_source_page(
+    wiki: Path,
+    *,
+    note_name: str,
+    title: str,
+    summary: str,
+    related: list[tuple[str, str]],
+) -> tuple[Path, str]:
+    """Write the source summary page and return (path, source_filename).
+
+    The source page captures the LLM-generated summary, plus a ## Related
+    section that links to all entities/concepts touched by this ingest.
+    """
+    source_filename = _wiki_filename(note_name)
+    source_page = wiki / source_filename
+    frontmatter = (
+        f"---\nsource: {note_name}\n"
+        f"created: {datetime.now().strftime('%Y-%m-%d')}\n---\n\n"
+    )
+    related_section = _build_related_section(related, from_filename=source_filename)
+    if related_section:
+        related_section = "\n" + related_section
+    source_page.write_text(
+        frontmatter + f"# {title}\n\n{summary}\n" + related_section,
+        encoding="utf-8",
+    )
+    return source_page, source_filename
+
+
+def _persist_source_index_entry(
+    wiki: Path,
+    *,
+    title: str,
+    source_filename: str,
+    summary: str,
+) -> None:
+    """Update index.md sources section with this source page entry."""
+    with _wiki_mutation_lock:
+        sources, entities_idx, concepts_idx = _read_index_entries(wiki)
+        sources = [e for e in sources if e.filename != source_filename]
+        sources.append(IndexEntry(
+            title=title,
+            filename=source_filename,
+            summary=(
+                summary.split("\n")[0][:app_config.WIKI_INDEX_SUMMARY_LEN]
+                or "(no summary)"
+            ),
+        ))
+        _write_index(wiki, sources=sources, entities=entities_idx, concepts=concepts_idx)
+
+
 def _execute_write_plan(
     plan: IngestWritePlan,
     config: LLMConfig,
@@ -205,58 +308,34 @@ def _execute_write_plan(
     Returns (ok_count, fail_count, flagged_paths).
     flagged_paths contains paths of source_check actions.
     """
-    wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
-    _ensure_subdirs(wiki)
+    with _wiki_mutation_lock:
+        wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
+        _ensure_subdirs(wiki)
 
-    sources_idx, entities_idx, concepts_idx = _read_index_entries(wiki)
-    ok, failed = 0, 0
-    flagged: list[str] = []
+        sources_idx, entities_idx, concepts_idx = _read_index_entries(wiki)
+        ok, failed = 0, 0
+        flagged: list[str] = []
 
-    for act in plan.actions:
-        if act.action == "skip":
-            continue
-
-        target = wiki / act.path
-        prefix = act.path.split("/")[0]
-        page_type = prefix[:-1] if prefix.endswith("s") else prefix
-        registry = entities_idx if prefix == "entities" else concepts_idx
-        page_related = related_map.get(act.path) if related_map else None
-
-        try:
-            if act.action == "source_check":
-                # Add source link but don't modify prose; flag for manual review
-                if target.exists():
-                    existing_sources = _collect_sources_from_page(target)
-                    sources_section = _build_sources_section(
-                        existing_sources, plan.source_filename,
-                        from_filename=act.path,
-                    )
-                    text = target.read_text(encoding="utf-8")
-                    lines = text.splitlines()
-                    cut_idx = len(lines)
-                    for i, line in enumerate(lines):
-                        if line.strip() in _MANAGED_HEADINGS:
-                            cut_idx = i
-                            break
-                    prose = "\n".join(lines[:cut_idx]).rstrip()
-                    target.write_text(
-                        prose + "\n\n" + sources_section, encoding="utf-8",
-                    )
-                flagged.append(f"{act.title} ({act.path}): {act.reason}")
+        for act in plan.actions:
+            if act.action == "skip":
                 continue
 
-            if act.action == "create":
-                _new_page(
-                    target,
-                    page_title=act.title,
-                    contribution=act.contribution,
-                    source_filename=plan.source_filename,
-                    page_type=page_type,
-                    related=page_related,
-                )
-                ok += 1
-            elif act.action == "update":
-                if not target.exists():
+            target = wiki / act.path
+            prefix = act.path.split("/")[0]
+            page_type = prefix[:-1] if prefix.endswith("s") else prefix
+            registry = entities_idx if prefix == "entities" else concepts_idx
+            page_related = related_map.get(act.path) if related_map else None
+
+            try:
+                if act.action == "source_check":
+                    if target.exists():
+                        _add_source_link_only(
+                            target, plan.source_filename, from_filename=act.path,
+                        )
+                    flagged.append(f"{act.title} ({act.path}): {act.reason}")
+                    continue
+
+                if act.action == "create":
                     _new_page(
                         target,
                         page_title=act.title,
@@ -265,65 +344,63 @@ def _execute_write_plan(
                         page_type=page_type,
                         related=page_related,
                     )
+                    ok += 1
+                elif act.action == "update":
+                    if not target.exists():
+                        _new_page(
+                            target,
+                            page_title=act.title,
+                            contribution=act.contribution,
+                            source_filename=plan.source_filename,
+                            page_type=page_type,
+                            related=page_related,
+                        )
+                    else:
+                        _merge_page(
+                            target,
+                            page_title=act.title,
+                            contribution=act.contribution,
+                            source_filename=plan.source_filename,
+                            config=config,
+                            related=page_related,
+                        )
+                    ok += 1
+                elif act.action == "light_link":
+                    if target.exists():
+                        _add_source_link_only(
+                            target, plan.source_filename, from_filename=act.path,
+                        )
+                    ok += 1
                 else:
-                    _merge_page(
-                        target,
-                        page_title=act.title,
-                        contribution=act.contribution,
-                        source_filename=plan.source_filename,
-                        config=config,
-                        related=page_related,
-                    )
-                ok += 1
-            elif act.action == "light_link":
-                if target.exists():
-                    existing_sources = _collect_sources_from_page(target)
-                    sources_section = _build_sources_section(
-                        existing_sources, plan.source_filename,
-                        from_filename=act.path,
-                    )
-                    text = target.read_text(encoding="utf-8")
-                    lines = text.splitlines()
-                    cut_idx = len(lines)
-                    for i, line in enumerate(lines):
-                        if line.strip() in _MANAGED_HEADINGS:
-                            cut_idx = i
-                            break
-                    prose = "\n".join(lines[:cut_idx]).rstrip()
-                    target.write_text(
-                        prose + "\n\n" + sources_section, encoding="utf-8",
-                    )
-                ok += 1
-            else:
-                continue
+                    continue
 
-            registry[:] = [e for e in registry if e.filename != act.path]
-            registry.append(IndexEntry(
-                title=act.title,
-                filename=act.path,
-                summary=(
-                    act.contribution.split("\n")[0][:app_config.WIKI_INDEX_SUMMARY_LEN]
-                    if act.contribution else "(linked)"
-                ),
-            ))
-        except Exception:
-            _logging.exception("write plan action failed for %s", act.path)
-            failed += 1
+                registry[:] = [e for e in registry if e.filename != act.path]
+                registry.append(IndexEntry(
+                    title=act.title,
+                    filename=act.path,
+                    summary=(
+                        act.contribution.split("\n")[0][:app_config.WIKI_INDEX_SUMMARY_LEN]
+                        if act.contribution else "(linked)"
+                    ),
+                ))
+            except Exception:
+                _logging.exception("write plan action failed for %s", act.path)
+                failed += 1
 
-    _write_index(wiki, sources=sources_idx, entities=entities_idx, concepts=concepts_idx)
+        _write_index(wiki, sources=sources_idx, entities=entities_idx, concepts=concepts_idx)
 
-    action_summary = ", ".join(
-        f"{a.action} {a.path}" for a in plan.actions if a.action != "skip"
-    )
-    flag_summary = ""
-    if flagged:
-        flag_summary = f"; source_check: {', '.join(flagged)}"
-    _append_log(
-        wiki, "ingest", plan.source_filename,
-        f"Executed write plan: {action_summary or '(no actions)'}; "
-        f"ok={ok}, failed={failed}{flag_summary}",
-    )
-    return ok, failed, flagged
+        action_summary = ", ".join(
+            f"{a.action} {a.path}" for a in plan.actions if a.action != "skip"
+        )
+        flag_summary = ""
+        if flagged:
+            flag_summary = f"; source_check: {', '.join(flagged)}"
+        _append_log(
+            wiki, "ingest", plan.source_filename,
+            f"Executed write plan: {action_summary or '(no actions)'}; "
+            f"ok={ok}, failed={failed}{flag_summary}",
+        )
+        return ok, failed, flagged
 
 
 def _build_ingest_extract_messages(
@@ -802,23 +879,80 @@ def _write_index(
     concepts: list[IndexEntry],
     synthesis: list[IndexEntry] | None = None,
 ) -> None:
-    def _section(name: str, entries: list[IndexEntry]) -> str:
-        if not entries:
-            return f"## {name}\n\n_(none yet)_\n\n"
-        lines = [f"## {name}\n"]
-        for e in sorted(entries, key=lambda x: x.title.lower()):
-            lines.append(f"- [{e.title}]({e.filename}) — {e.summary}\n")
-        lines.append("\n")
-        return "".join(lines)
+    with _wiki_mutation_lock:
+        def _section(name: str, entries: list[IndexEntry]) -> str:
+            if not entries:
+                return f"## {name}\n\n_(none yet)_\n\n"
+            lines = [f"## {name}\n"]
+            for e in sorted(entries, key=lambda x: x.title.lower()):
+                lines.append(f"- [{e.title}]({e.filename}) — {e.summary}\n")
+            lines.append("\n")
+            return "".join(lines)
 
-    body = (
-        "# Wiki Index\n\n"
-        + _section("Sources", sources)
-        + _section("Entities", entities)
-        + _section("Concepts", concepts)
-        + (_section("Synthesis", synthesis) if synthesis is not None else "")
+        body = (
+            "# Wiki Index\n\n"
+            + _section("Sources", sources)
+            + _section("Entities", entities)
+            + _section("Concepts", concepts)
+            + (_section("Synthesis", synthesis) if synthesis is not None else "")
+        )
+        (wiki_dir / "index.md").write_text(body, encoding="utf-8")
+
+
+def rebuild_index_from_disk(wiki_dir: Path) -> None:
+    """Enumerate wiki subdirectories and rebuild index.md from scratch."""
+    entries: dict[str, list[IndexEntry]] = {
+        "sources": [], "entities": [], "concepts": [], "synthesis": [],
+    }
+
+    for kind in ("sources", "entities", "concepts", "synthesis"):
+        dir_path = wiki_dir / kind
+        if not dir_path.is_dir():
+            continue
+        for md_file in sorted(dir_path.glob("*.md")):
+            rel = str(md_file.relative_to(wiki_dir)).replace("\\", "/")
+            title = md_file.stem.replace("_", " ").replace("-", " ").title()
+            summary = ""
+            try:
+                text = md_file.read_text(encoding="utf-8")
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("# ") and not stripped.startswith("## "):
+                        title = stripped[2:].strip()
+                        break
+                in_fm = False
+                past_fm = False
+                for line in text.splitlines():
+                    s = line.strip()
+                    if s == "---":
+                        if not past_fm:
+                            in_fm = not in_fm
+                            if not in_fm:
+                                past_fm = True
+                        continue
+                    if in_fm:
+                        continue
+                    if s and not s.startswith("#"):
+                        summary = s[:app_config.WIKI_INDEX_SUMMARY_LEN]
+                        break
+            except OSError:
+                pass
+            entries[kind].append(IndexEntry(title=title, filename=rel, summary=summary))
+
+    _write_index(
+        wiki_dir,
+        sources=entries["sources"],
+        entities=entries["entities"],
+        concepts=entries["concepts"],
+        synthesis=entries["synthesis"],
     )
-    (wiki_dir / "index.md").write_text(body, encoding="utf-8")
+    _append_log(
+        wiki_dir, "rebuild_index", "Index rebuilt from disk",
+        f"Rebuilt: {len(entries['sources'])} sources, "
+        f"{len(entries['entities'])} entities, "
+        f"{len(entries['concepts'])} concepts, "
+        f"{len(entries['synthesis'])} synthesis",
+    )
 
 
 def _read_index_catalog(wiki_dir: Path) -> IndexCatalog:
@@ -830,7 +964,7 @@ def _read_index_catalog(wiki_dir: Path) -> IndexCatalog:
     if not index_path.exists():
         return IndexCatalog(sources, entities, concepts, synthesis)
     current: list[IndexEntry] | None = None
-    for line in index_path.read_text(encoding="utf-8").splitlines():
+    for line in _cached_wiki_read(index_path).splitlines():
         if line.startswith("## Sources"):
             current = sources
         elif line.startswith("## Entities"):
@@ -855,23 +989,23 @@ def _read_index_entries(
 ) -> tuple[list[IndexEntry], list[IndexEntry], list[IndexEntry]]:
     catalog = _read_index_catalog(wiki_dir)
     return catalog.sources, catalog.entities, catalog.concepts
-    return sources, entities, concepts
 
 
 def _append_log(wiki_dir: Path, operation: str, title: str, details: str) -> None:
-    log_path = wiki_dir / "log.md"
-    header = "# Wiki Log\n\n"
-    existing = ""
-    if log_path.exists():
-        existing = log_path.read_text(encoding="utf-8")
-        if existing.startswith(header):
-            existing = existing[len(header):]
+    with _wiki_mutation_lock:
+        log_path = wiki_dir / "log.md"
+        header = "# Wiki Log\n\n"
+        existing = ""
+        if log_path.exists():
+            existing = log_path.read_text(encoding="utf-8")
+            if existing.startswith(header):
+                existing = existing[len(header):]
 
-    date = datetime.now().strftime("%Y-%m-%d %H:%M")
-    entry = LOG_ENTRY_TEMPLATE.format(
-        date=date, operation=operation, title=title, details=details,
-    )
-    log_path.write_text(header + entry + existing, encoding="utf-8")
+        date = datetime.now().strftime("%Y-%m-%d %H:%M")
+        entry = LOG_ENTRY_TEMPLATE.format(
+            date=date, operation=operation, title=title, details=details,
+        )
+        log_path.write_text(header + entry + existing, encoding="utf-8")
 
 
 def _wiki_filename(note_name: str) -> str:
@@ -888,7 +1022,7 @@ def _index_catalog_for_prompt(wiki_dir: Path) -> str:
     idx = wiki_dir / "index.md"
     if not idx.exists():
         return "(wiki is empty)"
-    body = idx.read_text(encoding="utf-8")
+    body = _cached_wiki_read(idx)
     # Strip the relative dir prefix from filenames in links for brevity,
     # so the LLM sees  [Title](summary_x.md)  instead of  [Title](sources/summary_x.md).
     out_lines: list[str] = []
@@ -944,7 +1078,7 @@ def _pick_index_candidates(
         return []
 
     combined_text = source_text + "\n" + chat_context
-    q_tokens = _tokenize(combined_text)
+    q_tokens = tokenize(combined_text)
     if not q_tokens:
         return []
 
@@ -983,13 +1117,18 @@ def _pick_index_candidates(
 def _read_note_source(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix == ".md":
-        return path.read_text(encoding="utf-8")
+        from converter.ocr_converter import enrich_markdown_images
+        return enrich_markdown_images(path.read_text(encoding="utf-8"), path.parent)
     if suffix == ".docx":
         from converter.docx_converter import docx_to_markdown
         return docx_to_markdown(path)
     if suffix == ".pdf":
         from converter.pdf_converter import pdf_to_markdown
         return pdf_to_markdown(path)
+    from converter.ocr_converter import is_image_file
+    if is_image_file(path):
+        from converter.ocr_converter import image_to_markdown
+        return image_to_markdown(path)
     raise ValueError(f"unsupported note format: {suffix}")
 
 
@@ -1023,13 +1162,6 @@ def ingest_note(
     ]
     extracted = _parse_extract(chat(config, extract_messages))
 
-    source_filename = _wiki_filename(note_path.name)
-    source_page = wiki / source_filename
-    frontmatter = (
-        f"---\nsource: {note_path.name}\n"
-        f"created: {datetime.now().strftime('%Y-%m-%d')}\n---\n\n"
-    )
-
     def _resolve_slug(item: dict, prefix: str) -> str:
         existing = entity_slugs_on_disk if prefix == "entities" else concept_slugs_on_disk
         raw = _slugify(item.get("slug") or item.get("name", ""))
@@ -1053,40 +1185,25 @@ def ingest_note(
     source_related = [
         (it.get("name", sl), fn) for it, sl, fn in resolved
     ]
-    related_section = _build_related_section(
-        source_related, from_filename=source_filename,
+    source_page, source_filename = _write_source_page(
+        wiki, note_name=note_path.name, title=title,
+        summary=extracted.summary, related=source_related,
     )
-    if related_section:
-        related_section = "\n" + related_section
-
-    source_page.write_text(
-        frontmatter + f"# {title}\n\n{extracted.summary}\n" + related_section,
-        encoding="utf-8",
+    _persist_source_index_entry(
+        wiki, title=title, source_filename=source_filename,
+        summary=extracted.summary,
     )
 
-    # After source page write, persist the source index entry before
-    # _execute_write_plan reads and rewrites index.md.
-    sources, entities_idx, concepts_idx = _read_index_entries(wiki)
-    sources = [e for e in sources if e.filename != source_filename]
-    sources.append(IndexEntry(
-        title=title,
-        filename=source_filename,
-        summary=(
-            extracted.summary.split("\n")[0][:app_config.WIKI_INDEX_SUMMARY_LEN]
-            or "(no summary)"
-        ),
-    ))
-    _write_index(wiki, sources=sources, entities=entities_idx, concepts=concepts_idx)
-
-    # Build related_map and write actions from extracted entities/concepts
+    # Build related_map and write actions.
+    # Each page's related = [source_page] + [all peers except self].
+    # Pre-build the full peers list once (O(n)) and filter per-page.
+    all_peers = [(it.get("name", sl), fn) for it, sl, fn in resolved]
     related_map: dict[str, list[tuple[str, str]]] = {}
     actions: list[IngestWriteAction] = []
     for item, slug, filename in resolved:
         target = wiki / filename
         page_related: list[tuple[str, str]] = [(title, source_filename)]
-        for peer_item, peer_slug, peer_fn in resolved:
-            if peer_fn != filename:
-                page_related.append((peer_item.get("name", peer_slug), peer_fn))
+        page_related.extend((name, fn) for name, fn in all_peers if fn != filename)
         related_map[filename] = page_related
         actions.append(IngestWriteAction(
             action="update" if target.exists() else "create",
@@ -1203,16 +1320,6 @@ def migrate_wiki_to_subdirs(wiki_dir: Path | None = None) -> int:
 
 # ─── query ───────────────────────────────────────────────────────────────
 
-def _tokenize(text: str) -> set[str]:
-    import re
-    tokens: set[str] = set()
-    for word in re.findall(r'[a-zA-Z0-9]{2,}', text.lower()):
-        tokens.add(word)
-    cjk = [ch for ch in text if '一' <= ch <= '鿿']
-    for i in range(len(cjk) - 1):
-        tokens.add(cjk[i] + cjk[i + 1])
-    return tokens
-
 
 def _pick_relevant_pages(
     question: str,
@@ -1227,7 +1334,7 @@ def _pick_relevant_pages(
 
     effective_n = top_n if top_n is not None else app_config.WIKI_RETRIEVAL_TOP_N
 
-    q_tokens = _tokenize(question)
+    q_tokens = tokenize(question)
     if not q_tokens:
         return []
     scored: list[tuple[float, Path]] = []
@@ -1240,7 +1347,7 @@ def _pick_relevant_pages(
         candidates.extend(wiki.glob(pattern))
 
     for md in candidates:
-        text = md.read_text(encoding="utf-8").lower()
+        text = _cached_wiki_read(md).lower()
         hits = sum(1 for t in q_tokens if t in text)
         if hits > 0:
             scored.append((hits, md))
@@ -1277,7 +1384,7 @@ def _pick_query_index_candidates(
     wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
     effective_n = top_n if top_n is not None else app_config.WIKI_QUERY_TOP_N
     catalog = _read_index_catalog(wiki)
-    q_tokens = _tokenize(question)
+    q_tokens = tokenize(question)
     if not q_tokens:
         return []
 
@@ -1370,7 +1477,7 @@ def _expand_query_related_pages(
         page = wiki / seed
         if not page.exists():
             continue
-        for rel in _extract_related_links(page.read_text(encoding="utf-8"), seed):
+        for rel in _extract_related_links(_cached_wiki_read(page), seed):
             if rel in seen or rel in seed_set:
                 continue
             target = wiki / rel
@@ -1411,7 +1518,7 @@ def _find_raw_sources_for_query(
     if not notes.exists():
         return []
 
-    q_tokens = _tokenize(question)
+    q_tokens = tokenize(question)
     candidates: list[Path] = []
     for used in used_pages:
         if not used.startswith("sources/summary_"):
@@ -1419,7 +1526,7 @@ def _find_raw_sources_for_query(
         source_page = wiki / used
         note_name = ""
         if source_page.exists():
-            for line in source_page.read_text(encoding="utf-8").splitlines()[:12]:
+            for line in _cached_wiki_read(source_page).splitlines()[:12]:
                 if line.startswith("source:"):
                     note_name = line.split(":", 1)[1].strip()
                     break
@@ -1495,7 +1602,7 @@ def _build_query_context(
         page = wiki / cand.path
         if not page.exists() or not page.is_file():
             continue
-        text = page.read_text(encoding="utf-8")
+        text = _cached_wiki_read(page)
         if len(text) > max_page:
             text = text[:max_page] + "\n... (truncated)"
         header = (
@@ -1547,56 +1654,57 @@ def save_query_answer_as_wiki_page(
     answer_type: str = "direct_answer",
     raw_sources: list[str] | None = None,
 ) -> Path:
-    wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
-    _ensure_subdirs(wiki)
-    raw_sources = raw_sources or []
+    with _wiki_mutation_lock:
+        wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
+        _ensure_subdirs(wiki)
+        raw_sources = raw_sources or []
 
-    slug = _slugify(question)[:80]
-    target = _dedupe_wiki_path(wiki / "synthesis" / f"query_{slug}.md")
-    rel_path = str(target.relative_to(wiki)).replace("\\", "/")
-    title = question.strip().replace("\n", " ")[:80] or "Query synthesis"
-    now = datetime.now().strftime("%Y-%m-%d")
+        slug = _slugify(question)[:80]
+        target = _dedupe_wiki_path(wiki / "synthesis" / f"query_{slug}.md")
+        rel_path = str(target.relative_to(wiki)).replace("\\", "/")
+        title = question.strip().replace("\n", " ")[:80] or "Query synthesis"
+        now = datetime.now().strftime("%Y-%m-%d")
 
-    source_lines = [f"- [[{_relative_wiki_link(p, rel_path)}]]" for p in used_pages]
-    source_lines.extend(f"- Raw note: {p}" for p in raw_sources)
-    related = [
-        (Path(p).stem.replace("summary_", "").replace("_", " "), p)
-        for p in used_pages
-    ]
-    related_section = _build_related_section(related, from_filename=rel_path)
-    body = (
-        "---\n"
-        "type: synthesis\n"
-        f"created: {now}\n"
-        f"question: {question}\n"
-        f"answer_type: {answer_type}\n"
-        "---\n\n"
-        f"# {title}\n\n"
-        "## Question\n\n"
-        f"{question}\n\n"
-        "## Answer\n\n"
-        f"{answer.strip()}\n\n"
-        "## Sources\n\n"
-        + ("\n".join(source_lines) if source_lines else "- (none)")
-        + "\n"
-    )
-    if related_section:
-        body += "\n" + related_section
-    target.write_text(body, encoding="utf-8")
+        source_lines = [f"- [[{_relative_wiki_link(p, rel_path)}]]" for p in used_pages]
+        source_lines.extend(f"- Raw note: {p}" for p in raw_sources)
+        related = [
+            (Path(p).stem.replace("summary_", "").replace("_", " "), p)
+            for p in used_pages
+        ]
+        related_section = _build_related_section(related, from_filename=rel_path)
+        body = (
+            "---\n"
+            "type: synthesis\n"
+            f"created: {now}\n"
+            f"question: {question}\n"
+            f"answer_type: {answer_type}\n"
+            "---\n\n"
+            f"# {title}\n\n"
+            "## Question\n\n"
+            f"{question}\n\n"
+            "## Answer\n\n"
+            f"{answer.strip()}\n\n"
+            "## Sources\n\n"
+            + ("\n".join(source_lines) if source_lines else "- (none)")
+            + "\n"
+        )
+        if related_section:
+            body += "\n" + related_section
+        target.write_text(body, encoding="utf-8")
 
-    catalog = _read_index_catalog(wiki)
-    synthesis = [e for e in catalog.synthesis if e.filename != rel_path]
-    summary = answer.strip().splitlines()[0][:app_config.WIKI_INDEX_SUMMARY_LEN] if answer.strip() else question[:app_config.WIKI_INDEX_SUMMARY_LEN]
-    synthesis.append(IndexEntry(title, rel_path, summary or "(saved query answer)"))
-    _write_index(
-        wiki,
-        sources=catalog.sources,
-        entities=catalog.entities,
-        concepts=catalog.concepts,
-        synthesis=synthesis,
-    )
-    _append_log(wiki, "query_save", title, f"Saved query answer to {rel_path}")
-    return target
+        catalog = _read_index_catalog(wiki)
+        synthesis = [e for e in catalog.synthesis if e.filename != rel_path]
+        summary = answer.strip().splitlines()[0][:app_config.WIKI_INDEX_SUMMARY_LEN] if answer.strip() else question[:app_config.WIKI_INDEX_SUMMARY_LEN]
+        synthesis.append(IndexEntry(title, rel_path, summary or "(saved query answer)"))
+        _write_index(
+            wiki,
+            sources=catalog.sources,
+            entities=catalog.entities,
+            concepts=catalog.concepts,
+            synthesis=synthesis,
+        )
+        _append_log(wiki, "query_save", title, f"Saved query answer to {rel_path}")
+        return target
 
 
 def query_wiki(
@@ -1609,6 +1717,10 @@ def query_wiki(
     on_thinking: Callable[[str], None] | None = None,
 ) -> Generator[str, None, None]:
     wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
+
+    if not question.strip():
+        yield "请输入要查询的问题。"
+        return
 
     candidates = _pick_query_index_candidates(question, wiki_dir=wiki)
     if not candidates:
@@ -1675,12 +1787,7 @@ def query_wiki(
 def background_ingest(note_path: Path) -> None:
     if not app_config.LLM_API_KEY:
         return
-    config = LLMConfig(
-        api_base=app_config.LLM_API_BASE,
-        api_key=app_config.LLM_API_KEY,
-        model=app_config.LLM_MODEL,
-        thinking=app_config.LLM_THINKING,
-    )
+    config = load_llm_config()
 
     def _worker():
         try:
@@ -1851,39 +1958,16 @@ def discuss_and_ingest(
 
     chat_q.put("\n正在执行写入计划...\n")
 
-    source_filename = _wiki_filename(note_path.name)
-    source_page = wiki / source_filename
-    frontmatter = (
-        f"---\nsource: {note_path.name}\n"
-        f"created: {datetime.now().strftime('%Y-%m-%d')}\n---\n\n"
-    )
     source_related = [
         (a.title, a.path) for a in all_actions
         if a.action in ("create", "update")
     ]
-    related_section = _build_related_section(
-        source_related, from_filename=source_filename,
+    source_page, source_filename = _write_source_page(
+        wiki, note_name=note_path.name, title=title,
+        summary=summary, related=source_related,
     )
-    if related_section:
-        related_section = "\n" + related_section
-    source_page.write_text(
-        frontmatter + f"# {title}\n\n{summary}\n" + related_section,
-        encoding="utf-8",
-    )
-
-    sources_idx, _, _ = _read_index_entries(wiki)
-    sources_idx = [e for e in sources_idx if e.filename != source_filename]
-    sources_idx.append(IndexEntry(
-        title=title, filename=source_filename,
-        summary=(
-            summary.split("\n")[0][:app_config.WIKI_INDEX_SUMMARY_LEN]
-            or "(no summary)"
-        ),
-    ))
-    _, entities_idx, concepts_idx = _read_index_entries(wiki)
-    _write_index(
-        wiki, sources=sources_idx,
-        entities=entities_idx, concepts=concepts_idx,
+    _persist_source_index_entry(
+        wiki, title=title, source_filename=source_filename, summary=summary,
     )
 
     plan = IngestWritePlan(

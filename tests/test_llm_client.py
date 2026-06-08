@@ -75,6 +75,32 @@ def test_chat_stream_yields_chunks():
     assert chunks == ["He", "llo"]
 
 
+def test_chat_stream_retries_retryable_status():
+    cfg = _make_config()
+
+    retry_response = MagicMock()
+    retry_response.status_code = 500
+    retry_response.__enter__ = MagicMock(return_value=retry_response)
+    retry_response.__exit__ = MagicMock(return_value=False)
+
+    ok_response = MagicMock()
+    ok_response.status_code = 200
+    ok_response.iter_lines.return_value = iter([
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}',
+        b"data: [DONE]",
+    ])
+    ok_response.raise_for_status = MagicMock()
+    ok_response.__enter__ = MagicMock(return_value=ok_response)
+    ok_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("llm.client.time.sleep"), \
+         patch("llm.client.httpx.stream", side_effect=[retry_response, ok_response]) as mock_stream:
+        chunks = list(chat_stream(cfg, [Message(role="user", content="hi")]))
+
+    assert chunks == ["ok"]
+    assert mock_stream.call_count == 2
+
+
 def test_chat_raises_on_empty_key():
     cfg = LLMConfig(api_base="https://fake.api/v1", api_key="", model="m")
     with pytest.raises(ValueError, match="API key"):

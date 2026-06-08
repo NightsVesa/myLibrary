@@ -4,7 +4,7 @@ import queue
 import threading
 import tkinter as tk
 
-from llm.client import LLMConfig
+from llm.client import LLMConfig, load_llm_config
 from llm.wiki_lint import LintFinding, lint_wiki, auto_fix, save_lint_report, static_checks
 from llm.wiki_engine import _append_log
 from ui.cartoon_widgets import (
@@ -40,6 +40,11 @@ class LintTab:
             top, "🔧 自动修复", command=self._on_fix, kind="pink", height=44,
         )
         self._fix_btn.pack_forget()
+
+        self._rebuild_btn = CartoonButton(
+            top, "📋 重建索引", command=self._on_rebuild_index, kind="pink", height=44,
+        )
+        self._rebuild_btn.pack_forget()
 
         self._run_btn = CartoonButton(
             top, "🩺 开始检查", command=self._on_run, kind="pink", height=44,
@@ -84,6 +89,7 @@ class LintTab:
         self._findings.clear()
         self._report_path = ""
         self._fix_btn.pack_forget()
+        self._rebuild_btn.pack_forget()
         self._text.config(state="normal")
         self._text.delete("1.0", "end")
         self._text.insert("end", "正在检查...\n", "header")
@@ -91,12 +97,7 @@ class LintTab:
 
         def _worker():
             import config as _cfg
-            cfg = LLMConfig(
-                api_base=_cfg.LLM_API_BASE,
-                api_key=_cfg.LLM_API_KEY,
-                model=_cfg.LLM_MODEL,
-                thinking=_cfg.LLM_THINKING,
-            )
+            cfg = load_llm_config()
             count = 0
             all_findings: list[LintFinding] = []
             try:
@@ -196,6 +197,7 @@ class LintTab:
 
         if fixable > 0:
             self._fix_btn.pack(side="right", padx=(8, 0))
+        self._rebuild_btn.pack(side="right", padx=(8, 0))
 
     def _append_finding(self, f: LintFinding) -> None:
         emoji = _SEV_EMOJI.get(f.severity, "•")
@@ -251,6 +253,49 @@ class LintTab:
             self._text.config(state="normal")
             self._text.delete("1.0", "end")
             self._text.insert("end", f"自动修复 {fixed_count} 项，静态检查已刷新\n\n", "header")
+            self._text.config(state="disabled")
+            self._running = False
+            self._render_grouped()
+        elif item[0] == "error":
+            self._show_error(item[1])
+
+    def _on_rebuild_index(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._rebuild_btn.pack_forget()
+
+        def _rebuild_worker():
+            import config as _cfg
+            from llm.wiki_engine import rebuild_index_from_disk
+            try:
+                rebuild_index_from_disk(_cfg.WIKI_DIR)
+                new_findings = static_checks(_cfg.WIKI_DIR)
+                self._q.put(("rebuild_done", new_findings))
+            except Exception as exc:
+                self._q.put(("error", f"重建索引失败: {type(exc).__name__}: {exc}"))
+
+        threading.Thread(target=_rebuild_worker, daemon=True).start()
+        self._text.config(state="normal")
+        self._text.delete("1.0", "end")
+        self._text.insert("end", "正在重建索引...\n", "header")
+        self._text.config(state="disabled")
+        self.frame.after(50, self._poll_rebuild)
+
+    def _poll_rebuild(self) -> None:
+        try:
+            item = self._q.get_nowait()
+        except queue.Empty:
+            self.frame.after(50, self._poll_rebuild)
+            return
+
+        if item[0] == "rebuild_done":
+            new_static = item[1]
+            llm_findings = [f for f in self._findings if f.source == "llm"]
+            self._findings = new_static + llm_findings
+            self._text.config(state="normal")
+            self._text.delete("1.0", "end")
+            self._text.insert("end", "索引已重建，静态检查已刷新\n\n", "header")
             self._text.config(state="disabled")
             self._running = False
             self._render_grouped()

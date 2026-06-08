@@ -49,6 +49,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         "torch", "torchvision", "torchaudio",
+        "paddle", "paddleocr", "paddlepaddle",
         "numpy", "scipy", "pandas",
         "matplotlib", "plotly", "seaborn",
         "sklearn", "skimage",

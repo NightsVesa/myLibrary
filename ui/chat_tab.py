@@ -1,10 +1,10 @@
+import logging as _log
 import queue
-import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
 
-from llm.client import LLMConfig
+from llm.client import LLMConfig, load_llm_config
 from llm.wiki_engine import QueryResultMeta, query_wiki, save_query_answer_as_wiki_page
 from ui.cartoon_widgets import (
     WHITE, SKY_LIGHT, SKY_DARK, TEXT_MAIN, TEXT_LIGHT,
@@ -22,6 +22,10 @@ class ChatTab:
         self._edge = edge_color
         self._queue: queue.Queue[str | None | tuple] = queue.Queue()
         self._streaming = False
+        self._polling = False
+        self._stream_id = 0
+        self._cancel_event: threading.Event | None = None
+        self._source_chip_seq = 0
         self._last_question = ""
         self._last_answer_chunks: list[str] = []
         self._last_meta: QueryResultMeta | None = None
@@ -91,10 +95,11 @@ class ChatTab:
         self.q_border.grid(row=0, column=0, sticky="ew")
         self.q_border.entry.bind("<Return>", lambda _e: self._on_send())
 
-        CartoonButton(
+        self.send_btn = CartoonButton(
             input_row, "💬", command=self._on_send,
             kind="orange", width=58, height=44,
-        ).grid(row=0, column=1, padx=(SPACING_MD, 0), sticky="e")
+        )
+        self.send_btn.grid(row=0, column=1, padx=(SPACING_MD, 0), sticky="e")
 
     def _append_text(self, text: str, tag: str = "") -> None:
         self.history.config(state=tk.NORMAL)
@@ -107,6 +112,7 @@ class ChatTab:
 
     def _on_send(self) -> None:
         if self._streaming:
+            self._cancel_stream()
             return
         entry = self.q_border.entry
         if getattr(entry, "_is_placeholder", False):
@@ -128,47 +134,76 @@ class ChatTab:
 
         self._append_text("Assistant: ", "assistant_name")
         self._streaming = True
+        self._stream_id += 1
+        stream_id = self._stream_id
+        cancel_event = threading.Event()
+        self._cancel_event = cancel_event
         self._last_question = question
         self._last_answer_chunks = []
         self._last_meta = None
+        self.q_border.entry.config(state="disabled")
+        self.send_btn.set_text("停止")
 
-        llm_config = LLMConfig(
-            api_base=app_config.LLM_API_BASE,
-            api_key=app_config.LLM_API_KEY,
-            model=app_config.LLM_MODEL,
-            thinking=app_config.LLM_THINKING,
-        )
+        llm_config = load_llm_config()
         thread = threading.Thread(
             target=self._stream_worker,
-            args=(question, llm_config),
+            args=(question, llm_config, stream_id, cancel_event),
             daemon=True,
         )
         thread.start()
-        self._poll_queue()
+        if not self._polling:
+            self._poll_queue()
 
-    def _stream_worker(self, question: str, config: LLMConfig) -> None:
+    def _cancel_stream(self) -> None:
+        if self._cancel_event:
+            self._cancel_event.set()
+        self._stream_id += 1
+        self._finish_stream(cancelled=True)
+
+    def _stream_worker(
+        self,
+        question: str,
+        config: LLMConfig,
+        stream_id: int,
+        cancel_event: threading.Event,
+    ) -> None:
         try:
             def _on_meta(meta: QueryResultMeta) -> None:
-                self._last_meta = meta
+                if not cancel_event.is_set():
+                    self._last_meta = meta
 
             def _on_thinking(text: str) -> None:
-                self._queue.put(("think", text))
+                if not cancel_event.is_set():
+                    self._queue.put((stream_id, ("think", text)))
 
             for chunk in query_wiki(
                 question, config, on_meta=_on_meta, on_thinking=_on_thinking,
             ):
-                self._queue.put(chunk)
+                if cancel_event.is_set():
+                    break
+                self._queue.put((stream_id, chunk))
         except Exception as exc:
-            self._queue.put(f"\n[Error: {exc}]")
-        self._queue.put(None)
+            _log.exception("chat query failed for: %s", question[:80])
+            if not cancel_event.is_set():
+                self._queue.put((stream_id, f"\n[Error: {exc}]"))
+        self._queue.put((stream_id, None))
 
     def _poll_queue(self) -> None:
+        self._polling = True
+        try:
+            if not self.frame.winfo_exists():
+                self._polling = False
+                return
+        except tk.TclError:
+            self._polling = False
+            return
         try:
             while True:
-                item = self._queue.get_nowait()
+                stream_id, item = self._queue.get_nowait()
+                if stream_id != self._stream_id:
+                    continue
                 if item is None:
-                    self._append_text("\n\n")
-                    self._streaming = False
+                    self._finish_stream(cancelled=False)
                     return
                 if isinstance(item, tuple) and item[0] == "think":
                     self._append_text(item[1], "thinking")
@@ -177,7 +212,26 @@ class ChatTab:
                     self._append_text(item)
         except queue.Empty:
             pass
-        self.frame.after(50, self._poll_queue)
+        if self._streaming:
+            self.frame.after(50, self._poll_queue)
+        else:
+            self._polling = False
+
+    def _finish_stream(self, *, cancelled: bool) -> None:
+        if cancelled:
+            self._append_text("\n[已停止生成]\n\n", "meta")
+        else:
+            self._append_text("\n\n")
+            if self._last_meta:
+                self._render_source_chips()
+        self._streaming = False
+        self._cancel_event = None
+        self._polling = False
+        try:
+            self.q_border.entry.config(state="normal")
+            self.send_btn.set_text("💬")
+        except tk.TclError:
+            pass
 
     def _save_last_answer(self) -> None:
         if self._streaming or not self._last_question or not self._last_answer_chunks:
@@ -200,25 +254,108 @@ class ChatTab:
             return
         self._append_text(f"[已保存到 {path}]\n\n", "meta")
 
+    def _render_source_chips(self) -> None:
+        """Render clickable source chips for used_pages and raw_sources."""
+        from ui.search_tab import extract_source_label, resolve_source_path
+
+        meta = self._last_meta
+        if not meta:
+            return
+
+        chips: list[tuple[str, Path | None]] = []
+
+        for rel_page in meta.used_pages:
+            wiki_path = (app_config.WIKI_DIR / rel_page).resolve()
+            if wiki_path.exists():
+                label = extract_source_label(wiki_path)
+                chips.append((label, wiki_path))
+            else:
+                chips.append((f"{rel_page} (missing)", None))
+
+        for raw_path_str in meta.raw_sources:
+            resolved = resolve_source_path(
+                raw_path_str, app_config.WIKI_DIR, app_config.NOTES_DIR,
+            )
+            if resolved:
+                label = extract_source_label(resolved)
+            else:
+                label = raw_path_str
+            chips.append((label, resolved))
+
+        if not chips:
+            return
+
+        self._append_text("\n", "meta")
+
+        self._source_chip_seq += 1
+        chip_seq = self._source_chip_seq
+        for i, (label, resolved_path) in enumerate(chips):
+            tag_name = f"src_{chip_seq}_{i}"
+            display = f" [{label}] "
+            if resolved_path:
+                self.history.tag_config(
+                    tag_name,
+                    foreground="#7C3AED",
+                    background="#F5F3FF",
+                    font=("Microsoft YaHei", 9, "bold"),
+                )
+                self.history.tag_bind(
+                    tag_name, "<Button-1>",
+                    lambda _e, p=resolved_path: self._on_source_click(p),
+                )
+                self.history.tag_bind(
+                    tag_name, "<Enter>",
+                    lambda _e, t=tag_name: self.history.tag_config(t, underline=True),
+                )
+                self.history.tag_bind(
+                    tag_name, "<Leave>",
+                    lambda _e, t=tag_name: self.history.tag_config(t, underline=False),
+                )
+            else:
+                self.history.tag_config(
+                    tag_name,
+                    foreground=TEXT_LIGHT,
+                    font=("Microsoft YaHei", 9),
+                )
+            self._append_text(display, tag_name)
+
+        self._append_text("\n", "meta")
+
+    def _on_source_click(self, path: Path) -> None:
+        from ui.search_tab import open_reader
+        root = self.frame.nametowidget(".")
+        open_reader(root, path)
+
+    def _copy_answer_with_sources(self) -> None:
+        """Copy the last answer with source attribution to clipboard."""
+        if not self._last_answer_chunks:
+            return
+        answer = "".join(self._last_answer_chunks).strip()
+        parts = [answer, "", "---", "Sources:"]
+        meta = self._last_meta
+        if meta:
+            for page in meta.used_pages:
+                parts.append(f"  - wiki: {page}")
+            for raw in meta.raw_sources:
+                parts.append(f"  - note: {raw}")
+        text = "\n".join(parts)
+        root = self.frame.nametowidget(".")
+        root.clipboard_clear()
+        root.clipboard_append(text)
+
     def _open_reader(self) -> None:
         text = self.history.get("1.0", tk.END).strip()
         if not text:
             return
         md = self._conversation_to_markdown(text)
-        tmp = Path(app_config.WIKI_DIR) / "_chat_preview.md"
-        tmp.parent.mkdir(parents=True, exist_ok=True)
+        import tempfile
+        tmp = Path(tempfile.mktemp(suffix=".md", prefix="chat_preview_"))
         tmp.write_text(md, encoding="utf-8")
 
-        from ui.search_tab import _ReaderWindow
+        from ui.search_tab import open_reader
         root = self.frame.nametowidget(".")
-        prev = getattr(root, "_active_reader", None)
-        if prev is not None and prev.winfo_exists():
-            prev.destroy()
-        reader = _ReaderWindow(
-            root, tmp, query="",
-            bg_color=self._bg, edge_color=self._edge,
-        )
-        root._active_reader = reader.win
+        open_reader(root, tmp, query="",
+                    bg_color=self._bg, edge_color=self._edge)
 
     @staticmethod
     def _conversation_to_markdown(raw: str) -> str:

@@ -35,16 +35,6 @@ AMBER_SOFT = "#FFF7ED"
 PURPLE_SOFT = "#F5F3FF"
 PLACEHOLDER = "#9CA3AF"
 
-# Aliases for backward compatibility
-PURPLE_PRIMARY = SKY_PRIMARY
-PURPLE_DARK = SKY_DARK
-PURPLE_LIGHT = "#C4B5FD"
-AMBER = ORANGE
-AMBER_DARK = ORANGE_DARK
-EMERALD = MINT
-EMERALD_DARK = MINT_DARK
-ROSE = PINK
-DIVIDER = DASH_LINE
 
 # ── Fonts ──────────────────────────────────────────────────────────────────
 FONT_TITLE = ("Microsoft YaHei", 16, "bold")

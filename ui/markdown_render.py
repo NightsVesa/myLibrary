@@ -176,6 +176,50 @@ def _insert_inline(text: tk.Text, line: str, *, base_tag: str | None = None) -> 
         pos = m.end()
 
 
+def configure_markdown_tags(text: tk.Text, base_size: int = 10) -> None:
+    """Pre-configure all markdown render tags on a tk.Text widget.
+
+    Call once per widget before using render_markdown_into().
+    """
+    SKY_DARK = "#6D28D9"
+    TEXT_LIGHT = "#6B7280"
+    SKY_LIGHT = "#E5E7EB"
+    s = base_size
+
+    text.tag_config("h1", font=("Microsoft YaHei", s + 5, "bold"),
+                    foreground=SKY_DARK, spacing1=8, spacing3=4)
+    text.tag_config("h2", font=("Microsoft YaHei", s + 3, "bold"),
+                    foreground=SKY_DARK, spacing1=6, spacing3=3)
+    text.tag_config("h3", font=("Microsoft YaHei", s + 2, "bold"),
+                    foreground=SKY_DARK, spacing1=4, spacing3=2)
+    text.tag_config("h4", font=("Microsoft YaHei", s + 1, "bold"),
+                    foreground=SKY_DARK)
+    text.tag_config("h5", font=("Microsoft YaHei", s, "bold"),
+                    foreground=SKY_DARK)
+    text.tag_config("h6", font=("Microsoft YaHei", s, "bold"),
+                    foreground=TEXT_LIGHT)
+    text.tag_config("bold",        font=("Microsoft YaHei", s, "bold"))
+    text.tag_config("italic",      font=("Microsoft YaHei", s, "italic"))
+    text.tag_config("bold_italic", font=("Microsoft YaHei", s, "bold", "italic"))
+    text.tag_config("code", font=("Consolas", max(9, s - 1)),
+                    background="#F5F3FF", foreground="#5B21B6")
+    text.tag_config("code_block", font=("Consolas", max(9, s - 1)),
+                    background="#F5F3FF", foreground="#4C1D95",
+                    lmargin1=14, lmargin2=14, spacing1=2, spacing3=2)
+    text.tag_config("list_bullet", foreground=SKY_DARK,
+                    font=("Microsoft YaHei", s, "bold"))
+    text.tag_config("blockquote_marker", foreground=SKY_DARK,
+                    font=("Microsoft YaHei", s, "bold"))
+    text.tag_config("blockquote", foreground=TEXT_LIGHT,
+                    font=("Microsoft YaHei", s, "italic"),
+                    lmargin1=4, lmargin2=14)
+    text.tag_config("hr", foreground=SKY_LIGHT, font=("Consolas", 8),
+                    spacing1=4, spacing3=4, justify="center")
+    text.tag_config("link", foreground=SKY_DARK, underline=True)
+    text.tag_config("frontmatter", foreground=TEXT_LIGHT,
+                    font=("Consolas", 9), lmargin1=4, lmargin2=4)
+
+
 def highlight_query(text: tk.Text, needle: str, *, tag: str = "hit") -> None:
     """Add `tag` to every occurrence of `needle` (case-insensitive)."""
     if not needle:

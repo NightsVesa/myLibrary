@@ -260,6 +260,7 @@ class _GraphWindow:
         self.h = DEFAULT_H
 
         self._graph: Graph | None = None
+        self._node_map: dict[str, GNode] = {}
         self._layout_nodes: list[dict] = []
         self._degrees: dict[str, int] = {}  # node id → connection count
         self._max_degree: int = 1
@@ -304,15 +305,26 @@ class _GraphWindow:
         self._label_hide_threshold = 300  # hide labels when node count exceeds this
 
         self._build_window()
+        saved = getattr(self.root, "_graph_geo", None)
+        if saved:
+            try:
+                self.win.geometry(saved)
+                self.win.update_idletasks()
+                self.w, self.h = self.win.winfo_width(), self.win.winfo_height()
+                self._maximized = getattr(self.root, "_graph_geo_maximized", False)
+            except tk.TclError:
+                pass
         self._build_canvas()
         self._build_toolbar()
         self._bind_events()
-        self.win.after(100, self._reload)
+        self._reload()
+        self.show()
 
     # ── window ───────────────────────────────────────────────────────────
 
     def _build_window(self) -> None:
         win = tk.Toplevel(self.root)
+        win.withdraw()
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         win.config(bg=TRANSPARENT)
@@ -322,6 +334,11 @@ class _GraphWindow:
         y = (sh - self.h) // 2
         win.geometry(f"{self.w}x{self.h}+{x}+{y}")
         self.win = win
+
+    def show(self) -> None:
+        self.win.update_idletasks()
+        self.win.deiconify()
+        self.win.lift()
 
     def _build_canvas(self) -> None:
         c = tk.Canvas(
@@ -620,6 +637,7 @@ class _GraphWindow:
         self._apply_filters()
 
     def _apply_filters(self) -> None:
+        self._top_ranked_cache = None
         if not self._graph:
             return
         self._visible_ids = filter_nodes(
@@ -726,7 +744,7 @@ class _GraphWindow:
         if not self._graph:
             return
 
-        node = next((n for n in self._graph.nodes if n.id == nid), None)
+        node = self._node_map.get(nid)
         if not node:
             return
 
@@ -803,6 +821,21 @@ class _GraphWindow:
             open_btn.pack(side="left", padx=(0, 8))
             open_btn.bind("<Button-1>", lambda _e: self._open_page(nid))
 
+            if node.kind == "source":
+                import config as _cfg
+                from ui.search_tab import find_original_note_for_source, open_reader
+                orig = find_original_note_for_source(nid, _cfg.NOTES_DIR)
+                if orig is not None:
+                    note_btn = tk.Label(
+                        actions, text="打开原始笔记", font=FONT_HINT,
+                        fg="#10B981", bg=WHITE, cursor="hand2",
+                    )
+                    note_btn.pack(side="left", padx=(0, 8))
+                    note_btn.bind(
+                        "<Button-1>",
+                        lambda _e, p=orig: open_reader(self.root, p),
+                    )
+
         center_btn = tk.Label(actions, text="居中", font=FONT_HINT,
                               fg=SKY_PRIMARY, bg=WHITE, cursor="hand2")
         center_btn.pack(side="left", padx=(0, 8))
@@ -878,6 +911,7 @@ class _GraphWindow:
 
         self._graph = parse_wiki_graph(config.WIKI_DIR)
         self._graph_mtime = current_mtime
+        self._node_map = {n.id: n for n in self._graph.nodes}
         self._degrees = self._compute_degrees(self._graph)
         self._max_degree = max(self._degrees.values()) if self._degrees else 1
         self._quality_data = graph_diagnostics(self._graph, self._degrees)
@@ -924,18 +958,14 @@ class _GraphWindow:
     def _node_kind(self, nid: str) -> str:
         if not self._graph:
             return "source"
-        for n in self._graph.nodes:
-            if n.id == nid:
-                return n.kind
-        return "source"
+        node = self._node_map.get(nid)
+        return node.kind if node else "source"
 
     def _node_title(self, nid: str) -> str:
         if not self._graph:
             return nid
-        for n in self._graph.nodes:
-            if n.id == nid:
-                return n.title
-        return nid
+        node = self._node_map.get(nid)
+        return node.title if node else nid
 
     def _draw(self) -> None:
         c = self._canvas
@@ -951,12 +981,15 @@ class _GraphWindow:
         show_labels = len(self._layout_nodes) < self._label_hide_threshold or self._scale > 1.2
         has_path = bool(self._path_nodes)
 
+        # O(1) lookup for layout positions
+        pos_map = {nd["id"]: nd for nd in self._layout_nodes}
+
         # ── Edges ───────────────────────────────────────────────────────
         for e in self._graph.edges:
             if e.source not in visible or e.target not in visible:
                 continue
-            snd = next((n for n in self._layout_nodes if n["id"] == e.source), None)
-            tnd = next((n for n in self._layout_nodes if n["id"] == e.target), None)
+            snd = pos_map.get(e.source)
+            tnd = pos_map.get(e.target)
             if snd and tnd:
                 x1 = snd["x"] * self._scale + ox
                 y1 = snd["y"] * self._scale + oy + CHROME_H + TOOLBAR_H
@@ -1153,6 +1186,10 @@ class _GraphWindow:
         """Return [(nid, title, degree, kind), ...] sorted by degree DESC, visible only."""
         if not self._graph:
             return []
+        cache_key = (frozenset(self._visible_ids), n)
+        cached = getattr(self, "_top_ranked_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
         items = []
         for nd in self._graph.nodes:
             if self._visible_ids and nd.id not in self._visible_ids:
@@ -1161,7 +1198,9 @@ class _GraphWindow:
             if deg > 0:
                 items.append((nd.id, nd.title, deg, nd.kind))
         items.sort(key=lambda t: t[2], reverse=True)
-        return items[:n]
+        result = items[:n]
+        self._top_ranked_cache = (cache_key, result)
+        return result
 
     def _draw_ranking(self) -> None:
         c = self._canvas
@@ -1205,19 +1244,15 @@ class _GraphWindow:
                 anchor="e", fill=TEXT_LIGHT, font=("Microsoft YaHei", 7, "bold"),
             )
 
-    # ── hit-test helpers ─────────────────────────────────────────────────
-
     # ── actions ──────────────────────────────────────────────────────────
 
     def _open_page(self, nid: str) -> None:
         import config
-        path = (config.WIKI_DIR / nid).resolve()
-        if not path.is_relative_to(config.WIKI_DIR.resolve()):
+        from ui.search_tab import open_reader, resolve_wiki_node_path
+        path = resolve_wiki_node_path(config.WIKI_DIR, nid)
+        if path is None:
             return
-        if not path.exists():
-            return
-        if self._main:
-            self._main._open_reader(path)
+        open_reader(self.root, path)
 
     def _toggle_maximize(self) -> None:
         if not self._maximized:
@@ -1234,6 +1269,8 @@ class _GraphWindow:
         self.win.iconify()
 
     def _close(self) -> None:
+        self.root._graph_geo = self.win.geometry()
+        self.root._graph_geo_maximized = self._maximized
         if self._main:
             self._main._close_graph()
         self.win.destroy()

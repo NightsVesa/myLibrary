@@ -1,0 +1,16 @@
+ttkbootstrap
+tkinterdnd2
+python-docx
+pdfplumber
+Pillow
+httpx
+python-dotenv
+pytest
+pyinstaller
+
+# Optional PDF test helper. Install when you want the PDF fixture test to run.
+# reportlab
+
+# Optional OCR support. These packages are large and are not bundled by default.
+# paddleocr
+# paddlepaddle

@@ -24,7 +24,7 @@ pyinstaller build.spec --noconfirm
 ```
 
 Required packages (no requirements.txt — install ad-hoc):
-`ttkbootstrap`, `tkinterdnd2`, `python-docx`, `pdfplumber`, `Pillow`, `httpx`, `python-dotenv`, `pytest`. Optional: `reportlab` (only used by one PDF test — it skips if absent).
+`ttkbootstrap`, `tkinterdnd2`, `python-docx`, `pdfplumber`, `Pillow`, `httpx`, `python-dotenv`, `pytest`. Optional: `reportlab` (only used by one PDF test — it skips if absent), `paddleocr` + `paddlepaddle` (OCR for images and scanned pages).
 
 ### LLM configuration
 
@@ -35,6 +35,8 @@ LLM_API_KEY=sk-...
 LLM_MODEL=deepseek-chat
 ```
 If `LLM_API_KEY` is empty or absent, LLM features (wiki ingest, chat Q&A) are silently disabled — the rest of the app works without it.
+
+Advanced tuning (all via `.env`, sensible defaults in `config.py`): `LLM_TIMEOUT` (default 60s), `LLM_MAX_RETRIES` (2), `LLM_THINKING` (false — enable extended thinking for supported models), `WIKI_RETRIEVAL_TOP_N` (5), `WIKI_QUERY_TOP_N` (6), `WIKI_QUERY_CONTEXT_MAX_CHARS` (30000), `WIKI_MAX_EXTRACT_ITEMS` (15), `WIKI_LINT_STALE_DAYS` (90). See `config.py` for the full list.
 
 ## Architecture
 
@@ -57,9 +59,10 @@ There are four kinds of windows, each a separate `Toplevel`, all using the `#ff0
 
 ### Animation state machine
 
-The sprite has 4 PNG frames (`assets/pet_{idle,attack,happy,sleep}.png`) and 4 states. State transitions:
+The sprite has 5 PNG frames (`assets/pet_{idle,attack,happy,sleep,eat}.png`) and 5 states. State transitions:
 - press + drag > 4px → `attack` (with forward-lunge ease-out + shake)
 - press without drag → `happy` for 1.2s (entrance pop + damped bounce) → back to `idle`
+- file upload/ingest completes → `eat` (brief chomp animation) → back to `idle`
 - no mouse activity for 30s → `sleep` (eased descent + slow breath)
 - any mouse activity → wake to `idle`
 
@@ -96,22 +99,26 @@ When drawing emoji + CJK text together in a single Canvas line, **always** split
 ### Storage and search
 
 - `storage/note_store.save_note(content, title=None, notes_dir=None)` — sanitizes title, auto-deduplicates filenames with `_1`, `_2` suffixes, writes UTF-8 `.md` to `config.NOTES_DIR`.
+- `storage/note_meta.py` — stores lightweight local organization metadata in `notes/.note_meta.json`: tags, favorites, and recent opens. This metadata is not written into Markdown note bodies or wiki pages.
 - `search/grep_search.search_notes(query, notes_dir=None)` — case-insensitive substring match across every `.md` file's contents. Returns `[{"file": Path, "snippet": str}]`. The return signature is the contract; UI layers depend on it. For LLM-powered semantic search, see the wiki layer below.
+
+`SearchTab` also supports `#tag` queries: typing `#python` calls `list_by_tag()` instead of `search_notes()`. Quick-filter chips below the search bar let users switch between full-text results, recent notes (`list_recent`), and favorites (`list_favorites`).
 
 ### Markdown renderer
 
 `ui/markdown_render.py` is a hand-rolled mini-parser (no `markdown` library dependency). `render_markdown_into(text_widget, source)` consumes a string and inserts pre-tagged spans into a `tk.Text`. Caller must pre-configure tags (`h1`–`h6`, `bold`, `italic`, `bold_italic`, `code`, `code_block`, `list_bullet`, `blockquote`, `blockquote_marker`, `hr`, `link`, `frontmatter`). Italic regex doesn't use `\w` lookbehind (Chinese chars are `\w` and would block matches); it uses `(?<!\*)\*(...)\*(?!\*)` instead.
 
-`SearchTab` uses this for inline preview; `_ReaderWindow` re-uses the same renderer with larger fonts and adds `find_hit` / `find_current` tags driven by its own Ctrl+F bar.
+`SearchTab` uses this for inline preview; `_ReaderWindow` re-uses the same renderer with larger fonts and adds `find_hit` / `find_current` tags driven by its own Ctrl+F bar. The reader also has a table-of-contents sidebar (parsed from ATX headings via `extract_markdown_headings`), a toolbar with back/forward navigation history, font-size +/−, TOC toggle, and favorite toggle. Tags and favorites are persisted via `storage/note_meta`.
 
 ### File upload (and drag-and-drop)
 
 `ui/upload_tab.SUPPORTED` maps suffix → handler:
-- `.docx` → `docx_to_markdown` (python-docx, heading-aware)
-- `.pdf` → `pdf_to_markdown` (pdfplumber, per-page `<!-- page N -->` markers)
-- `.md` → `_md_passthrough` (read as-is, no conversion)
+- `.docx` → `docx_to_markdown` (python-docx, heading-aware, with per-run image OCR)
+- `.pdf` → `pdf_to_markdown` (pdfplumber, per-page `<!-- page N -->` markers; scanned pages trigger whole-page OCR)
+- `.md` → `_md_passthrough` (reads Markdown and inserts OCR blocks for local image references when OCR is available)
+- image suffixes (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.tif`, `.tiff`, `.webp`) → `image_to_markdown`
 
-`MainWindow._on_files_dropped` reuses this same map for drag-and-drop, so adding a new format means **only updating `SUPPORTED`** — both the upload picker and the pet drop-target pick it up automatically.
+`save_supported_upload(path)` is the unified save entry point for both upload and drag-and-drop. It decides per-format how to save: images and Markdown are converted to `.md` via `save_note()` so OCR text is searchable; DOCX/PDF are copied as raw files via `save_raw_file()` and converted during wiki ingest. Both `UploadTab._on_save()` and `MainWindow._on_files_dropped()` go through this function. OCR is optional: if `paddleocr`/`paddlepaddle` are absent, image-only uploads are rejected with a clear message, while DOCX/PDF/MD text import still works.
 
 ### LLM wiki layer
 
@@ -144,6 +151,20 @@ After all merges, `index.md` is rewritten from scratch by `_write_index` (no inc
 
 Results include severity (`error`/`warn`/`info`), location, description, and fix suggestion. A log entry is appended to `log.md` after each run. Used by `ui/lint_tab.LintTab` (the 6th sidebar panel, Ctrl+6, red theme). Add new static checks to `wiki_lint.py:_check_*` ← `static_checks`; add LLM-specific checks to `llm_check`. `LintTab` follows the same `queue.Queue` + `root.after(50, poll)` streaming pattern as `ChatTab`.
 
+### Knowledge graph
+
+`llm/graph_data.py` parses `wiki/index.md` and the `## Related` sections inside wiki pages into a `Graph(nodes, edges)` dataclass. `Node` has `id`, `title`, `kind` (`source`/`entity`/`concept`), `summary`, `mtime`, and `exists` flag. `Edge` has `source`, `target`, `kind`, and `bidirectional` flag. The parser is pure logic with no tkinter dependency, so it's testable standalone.
+
+`ui/graph_tab.py` renders the graph as a force-directed node-link diagram inside a standalone resizable Toplevel (`_GraphWindow`). Unlike other panels, the graph doesn't embed inside a panel — `GraphTab` is a sentinel class; `_toggle_panel` detects it and opens `_GraphWindow` directly. Key features:
+- Force layout with `FORCE_ITERS` iterations + `DAMPING`, computed synchronously on reload.
+- Node radius and color intensity scale by degree (connection count).
+- Toolbar: search filter, kind toggles (source/entity/concept), min-degree slider, quality overlay, and path-finding mode.
+- Detail panel: clicking a node shows its summary and neighbors.
+- Relationship highlighting: selecting a node dims unrelated nodes/edges.
+- Path mode: click two nodes to highlight the shortest path between them.
+- Quality signals: orphan (no edges), missing (referenced but not on disk), and hub (high degree) overlays.
+- Mtime caching: skips re-parsing `index.md` if mtime hasn't changed.
+
 ### Packaging (PyInstaller)
 
 `build.spec` produces a one-folder bundle at `dist/知识库助手/` (~80 MB). Key decisions:
@@ -152,6 +173,7 @@ Results include severity (`error`/`warn`/`info`), location, description, and fix
 - `config.py` switches paths via `sys.frozen` detection: `ASSETS_DIR` → `_MEIPASS/assets`, everything else → `Path(sys.executable).parent`.
 - Aggressive `excludes` list (torch, numpy, scipy, matplotlib, pandas, sklearn, cv2, etc.) to keep the Anaconda-based bundle small. If a new dependency pulls in heavy transitive deps, add them to `excludes`.
 - `tkinterdnd2/tkdnd` native DLLs are explicitly bundled via `datas`.
+- Default PyInstaller builds do not bundle PaddleOCR/paddlepaddle; OCR is a source-run optional feature unless a separate OCR build profile is created.
 
 ## Karpathy Guidelines
 

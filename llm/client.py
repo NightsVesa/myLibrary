@@ -15,6 +15,16 @@ class LLMConfig:
     thinking: bool = False
 
 
+def load_llm_config() -> LLMConfig:
+    """Build an LLMConfig from the current env-derived module-level config."""
+    return LLMConfig(
+        api_base=_cfg.LLM_API_BASE,
+        api_key=_cfg.LLM_API_KEY,
+        model=_cfg.LLM_MODEL,
+        thinking=_cfg.LLM_THINKING,
+    )
+
+
 @dataclass(frozen=True)
 class Message:
     role: str
@@ -96,6 +106,9 @@ def chat_stream(
                 json=_body(config, messages, stream=True),
                 timeout=_cfg.LLM_TIMEOUT,
             ) as resp:
+                if resp.status_code in _RETRYABLE and attempt < _cfg.LLM_MAX_RETRIES:
+                    time.sleep(2 ** attempt)
+                    continue
                 resp.raise_for_status()
                 for raw_line in resp.iter_lines():
                     line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
