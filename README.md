@@ -87,10 +87,10 @@ python -m pytest tests/
 python -m pytest tests/test_wiki_engine.py -v
 python -m pytest tests/test_grep_search.py::test_case_insensitive -v
 
-# 打包轻量 Windows exe，输出到 dist/知识库助手/
+# 打包轻量 Windows exe，输出到 dist/myLibrary/
 pyinstaller build.spec --noconfirm
 
-# 打包 OCR Windows exe，输出到 dist/知识库助手-OCR/
+# 打包 OCR Windows exe，输出到 dist/myLibrary-OCR/
 pyinstaller build_ocr.spec --noconfirm
 ```
 
@@ -106,8 +106,8 @@ Release 1.0 提供两个 Windows one-folder zip 附件：
 解压后运行：
 
 ```text
-知识库助手/知识库助手.exe
-知识库助手-OCR/知识库助手-OCR.exe
+myLibrary/myLibrary.exe
+myLibrary-OCR/myLibrary-OCR.exe
 ```
 
 打包版行为：

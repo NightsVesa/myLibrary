@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for 知识库助手 OCR release
+# PyInstaller spec for myLibrary OCR release
 #
 # Build:  pyinstaller build_ocr.spec
-# Output: dist/知识库助手-OCR/
+# Output: dist/myLibrary-OCR/
 
 from pathlib import Path
 
@@ -113,7 +113,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="知识库助手-OCR",
+    name="myLibrary-OCR",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -134,5 +134,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="知识库助手-OCR",
+    name="myLibrary-OCR",
 )

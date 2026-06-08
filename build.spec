@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for 知识库助手
+# PyInstaller spec for myLibrary
 #
 # Build:  pyinstaller build.spec
-# Output: dist/知识库助手/
+# Output: dist/myLibrary/
 
 import sys
 from pathlib import Path
@@ -80,7 +80,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="知识库助手",
+    name="myLibrary",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -101,5 +101,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="知识库助手",
+    name="myLibrary",
 )

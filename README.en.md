@@ -87,10 +87,10 @@ python -m pytest tests/
 python -m pytest tests/test_wiki_engine.py -v
 python -m pytest tests/test_grep_search.py::test_case_insensitive -v
 
-# Build the lightweight Windows app, output to dist/知识库助手/
+# Build the lightweight Windows app, output to dist/myLibrary/
 pyinstaller build.spec --noconfirm
 
-# Build the OCR Windows app, output to dist/知识库助手-OCR/
+# Build the OCR Windows app, output to dist/myLibrary-OCR/
 pyinstaller build_ocr.spec --noconfirm
 ```
 
@@ -106,8 +106,8 @@ Release 1.0 provides two Windows one-folder zip packages:
 After extracting, run:
 
 ```text
-知识库助手/知识库助手.exe
-知识库助手-OCR/知识库助手-OCR.exe
+myLibrary/myLibrary.exe
+myLibrary-OCR/myLibrary-OCR.exe
 ```
 
 Packaged app behavior:
