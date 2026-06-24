@@ -75,6 +75,32 @@ def test_chat_stream_yields_chunks():
     assert chunks == ["He", "llo"]
 
 
+def test_chat_stream_emits_reasoning_alias_as_thinking():
+    cfg = _make_config()
+    lines = [
+        b'data: {"choices":[{"delta":{"reasoning":"Plan"}}]}',
+        b'data: {"choices":[{"delta":{"content":"Answer"}}]}',
+        b'data: [DONE]',
+    ]
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.iter_lines.return_value = iter(lines)
+    mock_response.raise_for_status = MagicMock()
+    mock_response.__enter__ = MagicMock(return_value=mock_response)
+    mock_response.__exit__ = MagicMock(return_value=False)
+    thinking = []
+
+    with patch("llm.client.httpx.stream", return_value=mock_response):
+        chunks = list(chat_stream(
+            cfg,
+            [Message(role="user", content="hi")],
+            on_thinking=thinking.append,
+        ))
+
+    assert thinking == ["Plan"]
+    assert chunks == ["Answer"]
+
+
 def test_chat_stream_retries_retryable_status():
     cfg = _make_config()
 

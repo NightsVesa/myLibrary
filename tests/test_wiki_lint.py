@@ -1,11 +1,14 @@
 import pytest
+import httpx
 from pathlib import Path
 from unittest.mock import patch
 
 from llm.client import LLMConfig
 from llm.wiki_lint import (
     LintFinding, static_checks, llm_check, lint_wiki,
-    save_lint_report, auto_fix, _finding, _PRIORITY_MAP, _parse_llm_lint,
+    save_lint_report, auto_fix, build_llm_fix_preview,
+    apply_llm_fix_preview, _finding, _PRIORITY_MAP, _parse_llm_lint,
+    _format_fix_context,
 )
 
 
@@ -411,6 +414,74 @@ def test_llm_check_skipped_without_api_key(wiki):
     assert len(findings) == 0
 
 
+def test_llm_check_reports_timeout_as_finding(wiki, config):
+    (wiki / "index.md").write_text("## Sources\n## Entities\n## Concepts\n", encoding="utf-8")
+
+    with patch("llm.wiki_lint.chat", side_effect=httpx.ReadTimeout("The read operation timed out")):
+        findings = list(llm_check(wiki, config))
+
+    assert len(findings) == 1
+    assert findings[0].kind == "llm_timeout"
+    assert findings[0].source == "llm"
+    assert "超时" in findings[0].message
+
+
+def test_lint_wiki_completes_when_llm_times_out(wiki, config):
+    (wiki / "index.md").write_text("- [A](sources/summary_a.md)\n", encoding="utf-8")
+
+    with patch("llm.wiki_lint.chat", side_effect=httpx.ReadTimeout("The read operation timed out")):
+        findings = list(lint_wiki(wiki, config))
+
+    kinds = {finding.kind for finding in findings}
+    assert "missing_index_section" in kinds
+    assert "llm_timeout" in kinds
+
+
+def test_llm_fix_context_respects_lint_budget(wiki, monkeypatch):
+    monkeypatch.setattr("llm.wiki_lint.app_config.WIKI_LINT_MAX_CHARS", 1800)
+    findings = []
+    for i in range(20):
+        path = wiki / "entities" / f"entity_{i}.md"
+        path.write_text("# Entity\n\n" + ("Long content.\n" * 200), encoding="utf-8")
+        findings.append(LintFinding(
+            severity="warn",
+            kind="no_sources",
+            location=f"entities/entity_{i}.md",
+            message="No sources",
+            suggestion="Add source references",
+            priority="P1",
+        ))
+
+    context = _format_fix_context(wiki, findings)
+
+    assert len(context) <= 1900
+    assert "[... content truncated" in context
+
+
+def test_llm_fix_context_keeps_each_selected_file_under_budget(wiki, monkeypatch):
+    monkeypatch.setattr("llm.wiki_lint.app_config.WIKI_LINT_MAX_CHARS", 1200)
+    findings = []
+    for name in ("alpha", "beta"):
+        (wiki / "entities" / f"{name}.md").write_text(
+            f"# {name.title()}\n\n" + ("Long existing content.\n" * 200),
+            encoding="utf-8",
+        )
+        findings.append(LintFinding(
+            severity="warn",
+            kind="no_sources",
+            location=f"entities/{name}.md",
+            message="No sources",
+            suggestion="Add source references",
+            priority="P1",
+        ))
+
+    context = _format_fix_context(wiki, findings)
+
+    assert len(context) <= 1300
+    assert "--- entities/alpha.md ---" in context
+    assert "--- entities/beta.md ---" in context
+
+
 # ── 12. auto_fix ─────────────────────────────────────────────────────────
 
 def test_auto_fix_heading_drift(wiki):
@@ -456,6 +527,123 @@ def test_auto_fix_does_not_touch_llm_findings(wiki):
     )
     fixed = auto_fix(wiki, [llm_finding])
     assert fixed == 0
+
+
+def test_llm_fix_preview_does_not_write_until_applied(wiki, config):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n- [E](entities/e.md) — e\n## Concepts\n",
+        encoding="utf-8",
+    )
+    target = wiki / "entities" / "e.md"
+    original = "# E\n\nContent without sources.\n"
+    target.write_text(original, encoding="utf-8")
+    finding = _finding(
+        "warn", "no_sources", "entities/e.md",
+        "Page has no source citations", "Add source references",
+    )
+    response = (
+        '{"files":[{"path":"entities/e.md",'
+        '"content":"# E\\n\\nContent with sources.\\n\\n## Sources\\n\\n- [A](../sources/summary_a.md)\\n",'
+        '"issues":["no_sources"]}]}'
+    )
+
+    with patch("llm.wiki_lint.chat", return_value=response):
+        preview = build_llm_fix_preview(wiki, [finding], config)
+
+    assert target.read_text(encoding="utf-8") == original
+    assert len(preview.files) == 1
+    assert preview.files[0].path == "entities/e.md"
+
+    written = apply_llm_fix_preview(wiki, preview)
+
+    assert written == 1
+    assert "## Sources" in target.read_text(encoding="utf-8")
+
+
+def test_llm_fix_preview_applies_safe_edits_to_existing_file(wiki, config):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n- [E](entities/e.md) — e\n## Concepts\n",
+        encoding="utf-8",
+    )
+    target = wiki / "entities" / "e.md"
+    original = "# E\n\nImportant paragraph.\n\nExisting conclusion.\n"
+    target.write_text(original, encoding="utf-8")
+    finding = _finding(
+        "warn", "no_sources", "entities/e.md",
+        "Page has no source citations", "Add source references",
+    )
+    response = (
+        '{"files":[{"path":"entities/e.md",'
+        '"edits":[{"old":"Existing conclusion.\\n",'
+        '"new":"Existing conclusion.\\n\\n## Sources\\n\\n- [A](../sources/summary_a.md)\\n"}],'
+        '"issues":["no_sources"]}]}'
+    )
+
+    with patch("llm.wiki_lint.chat", return_value=response):
+        preview = build_llm_fix_preview(wiki, [finding], config)
+
+    assert len(preview.files) == 1
+    assert "Important paragraph." in preview.files[0].updated
+    assert "## Sources" in preview.files[0].updated
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_llm_fix_preview_rejects_destructive_full_content(wiki, config):
+    target = wiki / "entities" / "e.md"
+    original = "# E\n\n" + "\n".join(f"Existing detail {i}." for i in range(12)) + "\n"
+    target.write_text(original, encoding="utf-8")
+    finding = _finding(
+        "warn", "no_sources", "entities/e.md",
+        "Page has no source citations", "Add source references",
+    )
+    response = (
+        '{"files":[{"path":"entities/e.md",'
+        '"content":"## Sources\\n\\n- [A](../sources/summary_a.md)\\n",'
+        '"issues":["no_sources"]}]}'
+    )
+
+    with patch("llm.wiki_lint.chat", return_value=response):
+        with pytest.raises(ValueError, match="removed too much existing content"):
+            build_llm_fix_preview(wiki, [finding], config)
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_llm_fix_preview_requires_each_selected_existing_file(wiki, config):
+    for name in ("alpha", "beta"):
+        (wiki / "entities" / f"{name}.md").write_text(
+            f"# {name.title()}\n\nExisting content.\n",
+            encoding="utf-8",
+        )
+    findings = [
+        _finding("warn", "no_sources", "entities/alpha.md", "No sources", "Add sources"),
+        _finding("warn", "no_sources", "entities/beta.md", "No sources", "Add sources"),
+    ]
+    response = (
+        '{"files":[{"path":"entities/alpha.md",'
+        '"edits":[{"old":"Existing content.\\n","new":"Existing content.\\n\\n## Sources\\n\\n- TBD\\n"}],'
+        '"issues":["no_sources"]}]}'
+    )
+
+    with patch("llm.wiki_lint.chat", return_value=response):
+        with pytest.raises(ValueError, match="did not return fixes"):
+            build_llm_fix_preview(wiki, findings, config)
+
+
+def test_llm_fix_preview_rejects_paths_outside_wiki(wiki, config):
+    (wiki / "index.md").write_text(
+        "## Sources\n## Entities\n## Concepts\n", encoding="utf-8")
+    finding = _finding(
+        "warn", "no_sources", "entities/e.md", "msg", "sug",
+    )
+    response = (
+        '{"files":[{"path":"../notes/secret.md",'
+        '"content":"stolen",'
+        '"issues":["no_sources"]}]}'
+    )
+
+    with patch("llm.wiki_lint.chat", return_value=response):
+        with pytest.raises(ValueError):
+            build_llm_fix_preview(wiki, [finding], config)
 
 
 # ── Preserved legacy tests ───────────────────────────────────────────────

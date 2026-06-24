@@ -4,8 +4,13 @@ import queue
 import threading
 import tkinter as tk
 
+import httpx
 from llm.client import LLMConfig, load_llm_config
-from llm.wiki_lint import LintFinding, lint_wiki, auto_fix, save_lint_report, static_checks
+from llm.wiki_lint import (
+    LintFinding, LintFixPreview, lint_wiki, auto_fix,
+    build_llm_fix_preview, apply_llm_fix_preview,
+    save_lint_report, static_checks,
+)
 from llm.wiki_engine import _append_log
 from ui.cartoon_widgets import (
     WHITE, SKY_LIGHT, TEXT_MAIN, TEXT_LIGHT,
@@ -15,6 +20,29 @@ from ui.cartoon_widgets import (
 
 _SEV_EMOJI = {"error": "❌", "warn": "⚠️", "info": "ℹ️"}
 _SUGGESTION_KINDS = frozenset({"investigation", "next_source"})
+_AUTO_FIX_ACTIONS = {
+    "heading_drift": "会把 Sources/Related 等非标准标题改成标准二级标题。",
+    "empty_link": "会删除整行空链接条目。",
+}
+_REBUILD_ACTION_KINDS = frozenset({
+    "missing_index", "missing_index_section", "missing_file",
+    "unindexed_file", "duplicate_index",
+})
+
+
+def _auto_action_text(f: LintFinding) -> str:
+    if f.source == "llm":
+        return "自动处理：可点击「自动修复」生成大模型修复预览，确认后再应用。"
+    if f.fixable:
+        detail = _AUTO_FIX_ACTIONS.get(f.kind, "会按内置规则处理此项。")
+        return f"自动处理：可点击「自动修复」按钮，{detail}"
+    if f.kind in _REBUILD_ACTION_KINDS:
+        return "自动处理：可先点击「重建索引」按钮刷新目录；也可由「自动修复」生成大模型修复预览。"
+    return "自动处理：可点击「自动修复」生成大模型修复预览，确认后再应用。"
+
+
+def _auto_action_count(findings: list[LintFinding]) -> int:
+    return sum(1 for f in findings if f.kind not in _SUGGESTION_KINDS)
 
 
 class LintTab:
@@ -26,6 +54,7 @@ class LintTab:
         self._q: queue.Queue[tuple] = queue.Queue()
         self._running = False
         self._findings: list[LintFinding] = []
+        self._pending_preview: LintFixPreview | None = None
         self._report_path: str = ""
         self._build()
 
@@ -45,6 +74,11 @@ class LintTab:
             top, "📋 重建索引", command=self._on_rebuild_index, kind="pink", height=44,
         )
         self._rebuild_btn.pack_forget()
+
+        self._apply_btn = CartoonButton(
+            top, "✅ 应用预览", command=self._on_apply_preview, kind="pink", height=44,
+        )
+        self._apply_btn.pack_forget()
 
         self._run_btn = CartoonButton(
             top, "🩺 开始检查", command=self._on_run, kind="pink", height=44,
@@ -87,9 +121,11 @@ class LintTab:
             return
         self._running = True
         self._findings.clear()
+        self._pending_preview = None
         self._report_path = ""
         self._fix_btn.pack_forget()
         self._rebuild_btn.pack_forget()
+        self._apply_btn.pack_forget()
         self._text.config(state="normal")
         self._text.delete("1.0", "end")
         self._text.insert("end", "正在检查...\n", "header")
@@ -146,9 +182,11 @@ class LintTab:
         self._text.insert("end", f"正在检查... 已发现 {count} 个问题\n", "header")
         self._text.config(state="disabled")
 
-    def _render_grouped(self) -> None:
+    def _render_grouped(self, notice: str = "") -> None:
         self._text.config(state="normal")
         self._text.delete("1.0", "end")
+        if notice:
+            self._text.insert("end", f"{notice}\n\n", "header")
 
         by_priority: dict[str, list[LintFinding]] = {"P0": [], "P1": [], "P2": []}
         suggestions: list[LintFinding] = []
@@ -182,10 +220,10 @@ class LintTab:
         p0 = len(by_priority.get("P0", []))
         p1 = len(by_priority.get("P1", []))
         p2 = len(by_priority.get("P2", []))
-        fixable = sum(1 for f in self._findings if f.fixable)
+        fixable = _auto_action_count(self._findings)
         summary = f"✅ 检查完成: P0×{p0} P1×{p1} P2×{p2}"
         if fixable:
-            summary += f" | {fixable} 可自动修复"
+            summary += f" | {fixable} 可自动处理"
         if self._report_path:
             from pathlib import Path
             summary += f" | 报告已保存: {Path(self._report_path).name}"
@@ -194,6 +232,7 @@ class LintTab:
         self._text.config(state="disabled")
         self._text.see("end")
         self._running = False
+        self._apply_btn.pack_forget()
 
         if fixable > 0:
             self._fix_btn.pack(side="right", padx=(8, 0))
@@ -207,6 +246,7 @@ class LintTab:
         self._text.insert("end", f"\n  {f.message}\n", "msg")
         if f.suggestion:
             self._text.insert("end", f"  → {f.suggestion}\n", "sug")
+        self._text.insert("end", f"  ⚙ {_auto_action_text(f)}\n", "sug")
         self._text.insert("end", "\n")
 
     def _show_error(self, message: str) -> None:
@@ -220,14 +260,28 @@ class LintTab:
         if self._running:
             return
         self._running = True
+        self._pending_preview = None
         self._fix_btn.pack_forget()
+        self._apply_btn.pack_forget()
 
         def _fix_worker():
             import config as _cfg
             try:
+                cfg = load_llm_config()
                 fixed = auto_fix(_cfg.WIKI_DIR, self._findings)
                 new_findings = static_checks(_cfg.WIKI_DIR)
-                self._q.put(("fix_done", fixed, new_findings))
+                llm_findings = [f for f in self._findings if f.source == "llm"]
+                remaining = new_findings + llm_findings
+                if remaining and cfg.api_key:
+                    try:
+                        preview = build_llm_fix_preview(_cfg.WIKI_DIR, remaining, cfg)
+                    except httpx.TimeoutException as exc:
+                        llm_error = f"大模型修复预览超时: {exc}"
+                        self._q.put(("fix_done", fixed, remaining, bool(cfg.api_key), llm_error))
+                    else:
+                        self._q.put(("fix_preview", fixed, preview, remaining))
+                else:
+                    self._q.put(("fix_done", fixed, remaining, bool(cfg.api_key), None))
             except Exception as exc:
                 self._q.put(("error", f"修复失败: {type(exc).__name__}: {exc}"))
 
@@ -247,15 +301,89 @@ class LintTab:
 
         if item[0] == "fix_done":
             fixed_count = item[1]
-            new_static = item[2]
-            llm_findings = [f for f in self._findings if f.source == "llm"]
-            self._findings = new_static + llm_findings
-            self._text.config(state="normal")
-            self._text.delete("1.0", "end")
-            self._text.insert("end", f"自动修复 {fixed_count} 项，静态检查已刷新\n\n", "header")
+            self._findings = item[2]
+            has_llm = item[3] if len(item) > 3 else False
+            llm_error = item[4] if len(item) > 4 else None
+            if llm_error:
+                notice = f"自动修复 {fixed_count} 项；{llm_error}"
+            elif has_llm:
+                notice = f"自动修复 {fixed_count} 项；大模型没有生成可应用的文件预览"
+            else:
+                notice = f"自动修复 {fixed_count} 项；未配置 LLM_API_KEY，剩余问题无法生成大模型预览"
+            self._render_grouped(notice)
+        elif item[0] == "fix_preview":
+            fixed_count = item[1]
+            preview = item[2]
+            self._findings = item[3]
+            self._pending_preview = preview
+            self._render_fix_preview(fixed_count, preview)
+        elif item[0] == "error":
+            self._show_error(item[1])
+
+    def _render_fix_preview(self, fixed_count: int, preview: LintFixPreview) -> None:
+        self._text.config(state="normal")
+        self._text.delete("1.0", "end")
+        self._text.insert("end", f"确定性自动修复 {fixed_count} 项。\n", "header")
+        if preview.summary:
+            self._text.insert("end", f"{preview.summary}\n", "msg")
+        if not preview.files:
+            self._text.insert("end", "大模型没有生成可应用的文件预览。\n", "header")
             self._text.config(state="disabled")
             self._running = False
-            self._render_grouped()
+            return
+
+        self._text.insert("end", "\n大模型修复预览（尚未写入文件）\n\n", "header")
+        for item in preview.files:
+            self._text.insert("end", f"📄 {item.path}\n", "loc")
+            if item.issues:
+                self._text.insert("end", f"  处理问题: {', '.join(item.issues)}\n", "sug")
+            old_preview = item.original[:260].replace("\n", " / ")
+            new_preview = item.updated[:260].replace("\n", " / ")
+            self._text.insert("end", f"  原内容: {old_preview}\n", "sug")
+            self._text.insert("end", f"  新内容: {new_preview}\n\n", "msg")
+
+        self._text.insert("end", "确认无误后点击「应用预览」写入文件。\n", "header")
+        self._text.config(state="disabled")
+        self._text.see("end")
+        self._running = False
+        self._apply_btn.pack(side="right", padx=(8, 0))
+
+    def _on_apply_preview(self) -> None:
+        if self._running or self._pending_preview is None:
+            return
+        self._running = True
+        self._apply_btn.pack_forget()
+
+        def _apply_worker():
+            import config as _cfg
+            from llm.wiki_engine import rebuild_index_from_disk
+            try:
+                written = apply_llm_fix_preview(_cfg.WIKI_DIR, self._pending_preview)
+                rebuild_index_from_disk(_cfg.WIKI_DIR)
+                new_findings = static_checks(_cfg.WIKI_DIR)
+                self._q.put(("apply_done", written, new_findings))
+            except Exception as exc:
+                self._q.put(("error", f"应用预览失败: {type(exc).__name__}: {exc}"))
+
+        threading.Thread(target=_apply_worker, daemon=True).start()
+        self._text.config(state="normal")
+        self._text.delete("1.0", "end")
+        self._text.insert("end", "正在应用大模型修复预览...\n", "header")
+        self._text.config(state="disabled")
+        self.frame.after(50, self._poll_apply)
+
+    def _poll_apply(self) -> None:
+        try:
+            item = self._q.get_nowait()
+        except queue.Empty:
+            self.frame.after(50, self._poll_apply)
+            return
+
+        if item[0] == "apply_done":
+            written = item[1]
+            self._pending_preview = None
+            self._findings = item[2]
+            self._render_grouped(f"已应用大模型修复预览，写入 {written} 个文件。")
         elif item[0] == "error":
             self._show_error(item[1])
 
@@ -264,6 +392,7 @@ class LintTab:
             return
         self._running = True
         self._rebuild_btn.pack_forget()
+        self._apply_btn.pack_forget()
 
         def _rebuild_worker():
             import config as _cfg

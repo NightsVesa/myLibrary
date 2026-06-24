@@ -17,14 +17,20 @@ def _find_tkdnd():
 
 tkdnd_src, tkdnd_dst = _find_tkdnd()
 
+datas = [
+    ("assets", "assets"),           # pet sprite PNGs
+    (tkdnd_src, tkdnd_dst),         # tkinterdnd2 native DLLs + tcl scripts
+]
+
+frontend_dist = Path("frontend") / "dist"
+if frontend_dist.exists():
+    datas.append((str(frontend_dist), "frontend"))
+
 a = Analysis(
     ["app.py"],
     pathex=[],
     binaries=[],
-    datas=[
-        ("assets", "assets"),           # pet sprite PNGs
-        (tkdnd_src, tkdnd_dst),         # tkinterdnd2 native DLLs + tcl scripts
-    ],
+    datas=datas,
     hiddenimports=[
         "ttkbootstrap",
         "ttkbootstrap.themes",
@@ -43,6 +49,27 @@ a = Analysis(
         "dotenv",
         "pdfplumber",
         "docx",
+        "fastapi",
+        "multipart",
+        "multipart.multipart",
+        "uvicorn",
+        "uvicorn.logging",
+        "uvicorn.loops",
+        "uvicorn.loops.auto",
+        "uvicorn.protocols",
+        "uvicorn.protocols.http",
+        "uvicorn.protocols.http.auto",
+        "uvicorn.protocols.websockets",
+        "uvicorn.protocols.websockets.auto",
+        "uvicorn.lifespan",
+        "uvicorn.lifespan.on",
+        "webview",
+        "webview.platforms",
+        "webview.platforms.edgechromium",
+        "pythonnet",
+        "clr_loader",
+        "proxy_tools",
+        "bottle",
     ],
     hookspath=[],
     hooksconfig={},
@@ -56,13 +83,14 @@ a = Analysis(
         "cv2", "opencv",
         "astropy", "pyerfa",
         "IPython", "jupyter", "notebook", "ipykernel",
+        "qtpy", "PyQt5", "PyQt6", "PySide2", "PySide6",
         "sphinx", "sphinxcontrib",
         "pytest", "coverage",
         "tensorboard", "tensorflow",
         "transformers", "datasets",
         "sympy", "networkx",
         "boto3", "botocore", "s3transfer",
-        "flask", "django", "fastapi", "uvicorn",
+        "flask", "django",
         "sqlalchemy", "alembic",
         "requests",
         "setuptools", "wheel", "pip",
@@ -86,6 +114,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,              # no console window
+    icon="assets/app_icon.ico",
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

@@ -57,6 +57,14 @@ def _body(config: LLMConfig, messages: list[Message], *, stream: bool) -> dict:
     return body
 
 
+def _reasoning_text(delta: dict) -> str:
+    for key in ("reasoning_content", "reasoning", "thinking"):
+        value = delta.get(key, "")
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 def chat(
     config: LLMConfig, messages: list[Message],
     *, on_thinking: "callable[[str], None] | None" = None,
@@ -77,7 +85,7 @@ def chat(
             resp.raise_for_status()
             msg = resp.json()["choices"][0]["message"]
             if on_thinking:
-                reasoning = msg.get("reasoning_content", "")
+                reasoning = _reasoning_text(msg)
                 if reasoning:
                     on_thinking(reasoning)
             return msg["content"]
@@ -123,7 +131,7 @@ def chat_stream(
                         continue
                     delta = choices[0].get("delta", {})
                     if on_thinking:
-                        reasoning = delta.get("reasoning_content", "")
+                        reasoning = _reasoning_text(delta)
                         if reasoning:
                             on_thinking(reasoning)
                     text = delta.get("content", "")

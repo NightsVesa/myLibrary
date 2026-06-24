@@ -94,14 +94,14 @@ pyinstaller build.spec --noconfirm
 pyinstaller build_ocr.spec --noconfirm
 ```
 
-## Release 1.0
+## Release 2.0
 
-Release 1.0 提供两个 Windows one-folder zip 附件：
+Release 2.0 提供两个 Windows one-folder zip 附件：
 
 | 附件 | OCR | 适合 |
 | --- | --- | --- |
-| `myLibrary-release1.0-lite-windows.zip` | 不包含 | 只需要记录、搜索、wiki、问答和图谱，优先小体积 |
-| `myLibrary-release1.0-ocr-windows.zip` | 包含 PaddleOCR、PaddlePaddle 和中文 OCR 模型 | 需要图片、扫描 PDF、文档内图片识别 |
+| `myLibrary-release2.0-lite-windows.zip` | 不包含 | 只需要记录、搜索、wiki、问答和图谱，优先小体积 |
+| `myLibrary-release2.0-ocr-windows.zip` | 包含 PaddleOCR、PaddlePaddle 和中文 OCR 模型 | 需要图片、扫描 PDF、文档内图片识别 |
 
 解压后运行：
 

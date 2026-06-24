@@ -1,7 +1,9 @@
 import logging as _err_log
+import json
 import math
 import queue
 import re
+import secrets
 import threading
 import time
 import traceback
@@ -15,6 +17,7 @@ from ttkbootstrap.dialogs import Messagebox
 from PIL import ImageTk
 from tkinterdnd2 import DND_FILES
 
+import config as _cfg
 from config import APP_TITLE, ASSETS_DIR
 from ui.cartoon_widgets import (
     FONT_TITLE, FONT_HEADING, FONT_BODY, FONT_BODY_BOLD, FONT_SHORTCUT, FONT_HINT, FONT_INPUT,
@@ -32,10 +35,18 @@ from ui.upload_tab import (
     SUPPORTED as UPLOAD_HANDLERS,
     save_supported_upload,
 )
-from ui.search_tab import SearchTab
+from ui.search_tab import SearchTab, open_reader
 from ui.chat_tab import ChatTab
 from ui.graph_tab import GraphTab, _GraphWindow
 from ui.lint_tab import LintTab
+from web_panel.launcher import (
+    build_panel_url,
+    default_frontend_dir,
+    frontend_available,
+    launch_web_panel_process,
+    react_panels_enabled,
+    webview_available,
+)
 
 PET_DIR = ASSETS_DIR
 PET_STATES = ("idle", "attack", "happy", "sleep", "eat")
@@ -51,6 +62,15 @@ ACTIONS = [
     ("体检", "🩺", LintTab,  "Ctrl+6", "#F43F5E", "#E11D48", "#FFF1F2", "#FECDD3"),
 ]
 
+REACT_PANEL_ROUTES = {
+    InputTab: "input",
+    UploadTab: "upload",
+    SearchTab: "search",
+    ChatTab: "chat",
+    GraphTab: "graph",
+    LintTab: "lint",
+}
+
 # Pet behaviour
 DRAG_THRESHOLD_PX = 4
 HAPPY_HOLD_MS = 1200
@@ -58,6 +78,7 @@ SLEEP_IDLE_MS = 30_000
 SPRITE_PAD_Y = 36
 SPRITE_PAD_X = 16
 TICK_MS = 33
+WEB_PANEL_IDLE_MS = 15 * 60 * 1000
 PET_FRAME_MS = {
     "idle": 280,
     "happy": 160,
@@ -508,6 +529,13 @@ class MainWindow:
         self._active_idx: int | None = None
         self._graph_win: _GraphWindow | None = None
         self._panel_pinned = False
+        self._panel_token = secrets.token_urlsafe(24)
+        self._panel_api_server = None
+        self._panel_api_lock = threading.Lock()
+        self._web_panel_process = None
+        self._web_panel_idle_after = None
+        self._web_panel_watch_after = None
+        self._react_panel_failure: str | None = None
 
         # ── panel resize state ─────────────────────────────────────────────
         self._panel_w = PANEL_W
@@ -519,7 +547,7 @@ class MainWindow:
         self.canvas.bind("<Enter>", self._on_activity_enter)
         self.canvas.bind("<Leave>", self._maybe_hide)
         self.canvas.bind("<Motion>", lambda _e: self._kick_activity())
-        self.canvas.bind("<Double-Button-1>", lambda _: root.destroy())
+        self.canvas.bind("<Double-Button-1>", lambda _: self._quit())
 
         # ── global shortcuts ────────────────────────────────────────────────
         root.bind_all("<Control-Key-1>", lambda _e: self._shortcut_open(0))
@@ -543,6 +571,7 @@ class MainWindow:
 
         self._reset_sleep_timer()
         self._tick()
+        self._schedule_react_panel_prewarm()
 
     # ── state machine ───────────────────────────────────────────────────────
 
@@ -756,8 +785,10 @@ class MainWindow:
         self._toggle_panel(idx, pinned=True)
 
     def _toggle_panel(self, idx: int, pinned: bool) -> None:
-        # Special case: graph opens as a standalone resizable window.
         label, emoji, tab_cls, hint, accent, _shadow, pale_bg, edge_color = ACTIONS[idx]
+        if self._try_open_react_panel(label, tab_cls):
+            return
+        # Fallback for source runs or builds without the React panel.
         if tab_cls is GraphTab:
             if self._graph_win and self._graph_win.win.winfo_exists():
                 self._close_graph()
@@ -854,8 +885,219 @@ class MainWindow:
         panel.deiconify()
         panel.lift()
 
+        if tab_cls in REACT_PANEL_ROUTES and self._react_panel_failure:
+            reason = self._react_panel_failure
+            self._react_panel_failure = None
+            self.root.after(
+                50,
+                lambda: Messagebox.show_warning(
+                    f"React {label}面板启动失败，已回退到旧面板。\n\n{reason}",
+                    parent=self.root,
+                ),
+            )
+
         if not pinned:
             panel.bind("<Leave>", self._maybe_hide)
+
+    def _try_open_react_panel(self, label: str, tab_cls) -> bool:
+        route = REACT_PANEL_ROUTES.get(tab_cls)
+        if route is None:
+            return False
+        self._react_panel_failure = None
+        if not react_panels_enabled():
+            return False
+        if not webview_available():
+            self._react_panel_failure = "pywebview 未安装或未正确打包"
+            _err_log.warning("React panel fallback: %s", self._react_panel_failure)
+            return False
+
+        frontend_dir = default_frontend_dir()
+        if not frontend_available(frontend_dir):
+            self._react_panel_failure = f"前端构建不存在: {frontend_dir}"
+            _err_log.warning("React panel fallback: %s", self._react_panel_failure)
+            return False
+
+        try:
+            server = self._ensure_panel_api_server(frontend_dir)
+            url = build_panel_url(
+                server.base_url,
+                route,
+                self._panel_token,
+            )
+            self._close_panel()
+            self._close_graph()
+            if self._show_cached_web_panel(route, server):
+                return True
+            proc = launch_web_panel_process(url, label)
+            self._web_panel_process = proc
+            self._schedule_web_panel_process_watch(proc)
+            self._schedule_web_panel_idle_cleanup()
+            return True
+        except Exception as exc:
+            if (
+                self._panel_api_server is not None
+                and not self._panel_api_server.is_running
+            ):
+                self._panel_api_server = None
+            self._react_panel_failure = f"React 面板启动失败: {exc}"
+            _err_log.exception("React panel launch failed; falling back to Tk panel")
+            return False
+
+    def _show_cached_web_panel(self, route: str, server) -> bool:
+        return self._route_live_web_panel(route, server=server)
+
+    def _route_live_web_panel(
+        self,
+        route: str,
+        *,
+        params: dict[str, str] | None = None,
+        server=None,
+    ) -> bool:
+        if self._web_panel_process is None:
+            return False
+        if self._web_panel_process.poll() is not None:
+            self._handle_web_panel_exit(self._web_panel_process)
+            return False
+        panel_server = server or self._panel_api_server
+        if panel_server is None or not panel_server.is_running:
+            return False
+        try:
+            panel_server.set_panel_route(route, params=params)
+            self._schedule_web_panel_idle_cleanup()
+            return True
+        except Exception:
+            _err_log.exception("Failed to route live React panel")
+        self._close_cached_web_panel()
+        return False
+
+    def _schedule_web_panel_idle_cleanup(self) -> None:
+        if self._web_panel_idle_after is not None:
+            self.root.after_cancel(self._web_panel_idle_after)
+        self._web_panel_idle_after = self.root.after(
+            WEB_PANEL_IDLE_MS,
+            self._close_cached_web_panel,
+        )
+
+    def _schedule_web_panel_process_watch(self, proc=None) -> None:
+        if self._web_panel_watch_after is not None:
+            self.root.after_cancel(self._web_panel_watch_after)
+            self._web_panel_watch_after = None
+        proc = proc or self._web_panel_process
+        if proc is None:
+            return
+        self._web_panel_watch_after = self.root.after(
+            1000,
+            lambda current=proc: self._watch_web_panel_process(current),
+        )
+
+    def _watch_web_panel_process(self, proc) -> None:
+        self._web_panel_watch_after = None
+        if self._web_panel_process is not proc:
+            return
+        if proc.poll() is None:
+            self._schedule_web_panel_process_watch(proc)
+            return
+        self._handle_web_panel_exit(proc)
+
+    def _handle_web_panel_exit(self, proc) -> None:
+        code = proc.poll()
+        self._clear_cached_web_panel()
+        if code not in (None, 0):
+            _err_log.error(
+                "React panel process exited with code %s; see logs/web_panel.log",
+                code,
+            )
+            self.root.after(
+                50,
+                lambda exit_code=code: Messagebox.show_warning(
+                    f"React 面板已退出，退出码 {exit_code}。\n请查看 logs/web_panel.log。",
+                    parent=self.root,
+                ),
+            )
+
+    def _close_cached_web_panel(self) -> None:
+        if self._web_panel_idle_after is not None:
+            self.root.after_cancel(self._web_panel_idle_after)
+            self._web_panel_idle_after = None
+        if self._web_panel_watch_after is not None:
+            self.root.after_cancel(self._web_panel_watch_after)
+            self._web_panel_watch_after = None
+        proc = self._web_panel_process
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+        self._clear_cached_web_panel()
+
+    def _clear_cached_web_panel(self) -> None:
+        self._web_panel_process = None
+
+    def _schedule_react_panel_prewarm(self) -> None:
+        self.root.after(250, self._prewarm_react_panel)
+
+    def _prewarm_react_panel(self) -> None:
+        if not react_panels_enabled():
+            return
+
+        def worker() -> None:
+            try:
+                if not webview_available():
+                    _err_log.warning("React panel prewarm skipped: pywebview is not installed")
+                    return
+                frontend_dir = default_frontend_dir()
+                if not frontend_available(frontend_dir):
+                    _err_log.warning("React panel prewarm skipped: frontend missing at %s", frontend_dir)
+                    return
+                server = self._ensure_panel_api_server(frontend_dir)
+                from web_panel.webview_entry import wait_until_page_ready
+
+                wait_until_page_ready(
+                    build_panel_url(server.base_url, "search", self._panel_token),
+                    timeout_s=2,
+                )
+                _err_log.info("React panel API prewarmed at %s", server.base_url)
+            except Exception:
+                _err_log.exception("React panel API prewarm failed")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _ensure_panel_api_server(self, frontend_dir: Path):
+        from web_panel.server import PanelApiServer
+
+        with self._panel_api_lock:
+            if (
+                self._panel_api_server is not None
+                and not self._panel_api_server.is_running
+            ):
+                self._panel_api_server = None
+
+            if self._panel_api_server is None:
+                server = PanelApiServer(
+                    notes_dir=_cfg.NOTES_DIR,
+                    wiki_dir=_cfg.WIKI_DIR,
+                    panel_token=self._panel_token,
+                    frontend_dir=frontend_dir,
+                    open_reader=self._open_reader_from_react,
+                )
+                try:
+                    server.start()
+                except Exception:
+                    if not server.is_running:
+                        self._panel_api_server = None
+                    raise
+                self._panel_api_server = server
+
+            return self._panel_api_server
+
+    def _open_reader_from_react(self, path: Path, query: str) -> None:
+        self.root.after(
+            0,
+            lambda: open_reader(
+                self.root,
+                path,
+                query=query,
+                bg_color=APP_BG,
+                edge_color=GLASS_EDGE,
+            ),
+        )
 
     def _get_panel_bg(
         self, w: int, h: int, body: str, edge: str, shadow: str,
@@ -900,6 +1142,13 @@ class MainWindow:
         self._panel_h = PANEL_H
         self._panel_resize_edge = ""
         self._panel_drag_origin = (0, 0)
+
+    def _quit(self) -> None:
+        self._close_cached_web_panel()
+        if self._panel_api_server is not None:
+            self._panel_api_server.stop()
+            self._panel_api_server = None
+        self.root.destroy()
 
     def _close_graph(self) -> None:
         self._graph_win = None
@@ -1153,10 +1402,19 @@ class MainWindow:
                         f"部分文件无法读取:\n{bad_names}", parent=self.root,
                     )
                 if saved_paths:
-                    self._ingest_with_animation(saved_paths)
+                    self._handle_dropped_saved_paths(saved_paths)
 
         threading.Thread(target=worker, daemon=True).start()
         self.root.after(50, poll)
+
+    def _handle_dropped_saved_paths(self, saved_paths: list[Path]) -> None:
+        self._set_state("idle")
+        if not saved_paths:
+            return
+        params = {"paths": json.dumps([str(p) for p in saved_paths])}
+        if self._route_live_web_panel("ingest", params=params):
+            return
+        self._show_inbox_toast(len(saved_paths))
 
     # ── ingest feedback ────────────────────────────────────────────────────
 
@@ -1524,6 +1782,9 @@ class MainWindow:
                     ingest_phase[0] = "select"
                     confirm_btn.set_text("✅ 使用默认")
                     confirm_btn.pack(side="right", padx=6)
+                elif item == "__AWAIT_INPUT__":
+                    ingest_phase[0] = "chat"
+                    confirm_btn.pack_forget()
                 elif item == "__DONE__":
                     continue
                 elif item == "__ERROR__":
@@ -1588,6 +1849,52 @@ class MainWindow:
             status += f", {stashed} 暂存"
         cv.create_text(
             bw // 2, 66, text=status,
+            fill=TEXT_LIGHT, font=FONT_HINT,
+        )
+        toast.update_idletasks()
+        toast.deiconify()
+        toast.lift()
+
+        def _dismiss():
+            try:
+                toast.destroy()
+            except tk.TclError:
+                pass
+        toast.bind("<Button-1>", lambda _e: _dismiss())
+        self.root.after(5000, _dismiss)
+
+    def _show_inbox_toast(self, count: int) -> None:
+        """Show a light notice when dropped files are saved for later ingest."""
+        bw, bh = 300, 108
+        rx, ry = self.root.winfo_x(), self.root.winfo_y()
+        bx = max(0, rx + self.window_w // 2 - bw // 2)
+        by = max(0, ry - bh - 16)
+
+        toast = tk.Toplevel(self.root)
+        toast.withdraw()
+        toast.overrideredirect(True)
+        toast.attributes("-topmost", True)
+        toast.config(bg=TRANSPARENT)
+        toast.wm_attributes("-transparentcolor", TRANSPARENT)
+        toast.geometry(f"{bw}x{bh}+{bx}+{by}")
+
+        card = _shared_card_png(bw, bh, 18, APP_BG, GLASS_EDGE, SOFT_SHADOW, 7)
+        self._inbox_toast_bg_img = ImageTk.PhotoImage(card)
+
+        cv = tk.Canvas(
+            toast, width=bw, height=bh,
+            bg=TRANSPARENT, highlightthickness=0, borderwidth=0,
+        )
+        cv.pack()
+        cv.create_image(0, 0, image=self._inbox_toast_bg_img, anchor="nw")
+        _draw_soft_glow(cv, bw, bh)
+
+        cv.create_text(
+            bw // 2, 34, text="已保存到暂存箱",
+            fill=TEXT_MAIN, font=FONT_HEADING,
+        )
+        cv.create_text(
+            bw // 2, 66, text=f"{count} 个文件等待手动收录",
             fill=TEXT_LIGHT, font=FONT_HINT,
         )
         toast.update_idletasks()

@@ -32,6 +32,9 @@ def _ocr_model_data():
 
 tkdnd_src, tkdnd_dst = _find_tkdnd()
 
+frontend_dist = Path("frontend") / "dist"
+frontend_datas = [(str(frontend_dist), "frontend")] if frontend_dist.exists() else []
+
 ocr_datas = (
     collect_data_files("paddle", include_py_files=False)
     + collect_data_files("paddleocr", include_py_files=False)
@@ -57,6 +60,7 @@ a = Analysis(
     datas=[
         ("assets", "assets"),
         (tkdnd_src, tkdnd_dst),
+        *frontend_datas,
         *_ocr_model_data(),
         *ocr_datas,
     ],
@@ -78,6 +82,27 @@ a = Analysis(
         "dotenv",
         "pdfplumber",
         "docx",
+        "fastapi",
+        "multipart",
+        "multipart.multipart",
+        "uvicorn",
+        "uvicorn.logging",
+        "uvicorn.loops",
+        "uvicorn.loops.auto",
+        "uvicorn.protocols",
+        "uvicorn.protocols.http",
+        "uvicorn.protocols.http.auto",
+        "uvicorn.protocols.websockets",
+        "uvicorn.protocols.websockets.auto",
+        "uvicorn.lifespan",
+        "uvicorn.lifespan.on",
+        "webview",
+        "webview.platforms",
+        "webview.platforms.edgechromium",
+        "pythonnet",
+        "clr_loader",
+        "proxy_tools",
+        "bottle",
         *ocr_hiddenimports,
     ],
     hookspath=[],
@@ -96,7 +121,7 @@ a = Analysis(
         "pytest", "coverage",
         "sympy", "networkx",
         "boto3", "botocore", "s3transfer",
-        "flask", "django", "fastapi", "uvicorn",
+        "flask", "django",
         "sqlalchemy", "alembic",
         "setuptools", "wheel", "pip",
     ],
@@ -119,6 +144,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon="assets/app_icon.ico",
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

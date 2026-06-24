@@ -36,6 +36,14 @@ def _path_from_key(key: str, notes_dir: Path | None = None) -> Path:
     return _notes_dir(notes_dir) / path
 
 
+def _is_inside_notes(path: Path, notes_dir: Path | None = None) -> bool:
+    try:
+        Path(path).resolve().relative_to(_notes_dir(notes_dir).resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def _empty_store() -> dict[str, Any]:
     return {"version": 1, "notes": {}, "recent": []}
 
@@ -151,7 +159,7 @@ def list_recent(*, notes_dir: Path | None = None, limit: int = RECENT_LIMIT) -> 
         if not isinstance(key, str):
             continue
         path = _path_from_key(key, notes_dir)
-        if path.exists():
+        if _is_inside_notes(path, notes_dir) and path.exists():
             out.append(path)
         if len(out) >= limit:
             break

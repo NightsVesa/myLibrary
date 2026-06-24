@@ -7,6 +7,10 @@ httpx
 python-dotenv
 pytest
 pyinstaller
+fastapi
+uvicorn
+pywebview
+python-multipart
 
 # Optional PDF test helper. Install when you want the PDF fixture test to run.
 # reportlab

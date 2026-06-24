@@ -409,6 +409,37 @@ def test_execute_write_plan_source_check_action(wiki_dir, config):
     assert "source_check" in log.lower() or "Conflicting" in log
 
 
+def test_execute_write_plan_creates_missing_page_from_source_check(wiki_dir, config):
+    _write_index(wiki_dir, sources=[], entities=[], concepts=[])
+    plan = IngestWritePlan(
+        source_summary="Loop Engineering uses automated loops for agent work.",
+        source_filename="sources/summary_loop.md",
+        actions=[
+            IngestWriteAction(
+                "source_check",
+                "concepts/loop-engineering.md",
+                "Loop Engineering",
+                "New concept introduced in the source; no existing page.",
+                "Loop Engineering is a workflow pattern built around automated agent loops.",
+            ),
+        ],
+        user_focus=[], referenced_source_summaries=[],
+    )
+
+    ok, failed, flagged = _execute_write_plan(plan, config, wiki_dir=wiki_dir)
+
+    assert ok == 1
+    assert failed == 0
+    assert flagged == []
+    page = wiki_dir / "concepts" / "loop-engineering.md"
+    assert page.exists()
+    body = page.read_text(encoding="utf-8")
+    assert "Loop Engineering" in body
+    assert "automated agent loops" in body
+    idx = (wiki_dir / "index.md").read_text(encoding="utf-8")
+    assert "concepts/loop-engineering.md" in idx
+
+
 def test_execute_write_plan_isolates_failures(wiki_dir, config):
     (wiki_dir / "entities" / "e1.md").write_text("# E1\n\nold\n", encoding="utf-8")
     (wiki_dir / "entities" / "e2.md").write_text("# E2\n\nold\n", encoding="utf-8")
@@ -771,7 +802,10 @@ def test_discuss_and_ingest_shows_candidates(notes_dir, config):
          patch("llm.wiki_engine.chat", side_effect=fake_chat):
 
         def _run():
-            discuss_and_ingest(note, config, chat_q=chat_q_out, user_q=user_q_in)
+            discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            )
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
@@ -780,14 +814,27 @@ def test_discuss_and_ingest_shows_candidates(notes_dir, config):
         while True:
             item = chat_q_out.get(timeout=3)
             items.append(item)
-            if "候选" in str(item) or "📋" in str(item):
+            if item == "__AWAIT_INPUT__":
                 break
             if item in ("__DONE__", "__ERROR__"):
                 break
 
-        assert any("候选" in str(i) or "📋" in str(i) for i in items)
+        assert any("Looks good" in str(i) for i in items)
 
-        user_q_in.put("默认")
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+
+        candidate_items = []
+        while True:
+            item = chat_q_out.get(timeout=3)
+            candidate_items.append(item)
+            if isinstance(item, tuple) and item[0] == "__CANDIDATES__":
+                break
+        assert not any(
+            isinstance(item, str) and "📋 候选页面" in item
+            for item in candidate_items
+        )
+
+        user_q_in.put({"type": "command", "command": "generate_plan"})
 
         while True:
             item = chat_q_out.get(timeout=3)
@@ -818,16 +865,26 @@ def test_discuss_and_ingest_cancel_at_candidates(notes_dir, config):
          patch("llm.wiki_engine.chat", return_value='{"summary": "S.", "candidates": []}'):
 
         def _run():
-            return discuss_and_ingest(note, config, chat_q=chat_q_out, user_q=user_q_in)
+            return discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            )
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
 
         while True:
             item = chat_q_out.get(timeout=3)
-            if "候选" in str(item) or "选择" in str(item):
+            if item == "__AWAIT_INPUT__":
                 break
             if item in ("__DONE__", "__ERROR__"):
+                break
+
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if item == "__SELECT_DEFAULT__":
                 break
 
         user_q_in.put("__CANCEL__")
@@ -866,7 +923,10 @@ def test_discuss_and_ingest_chat_history_in_candidate_prompt(notes_dir, config):
          patch("llm.wiki_engine.chat", side_effect=fake_chat):
 
         def _run():
-            discuss_and_ingest(note, config, chat_q=chat_q_out, user_q=user_q_in)
+            discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            )
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
@@ -880,9 +940,16 @@ def test_discuss_and_ingest_chat_history_in_candidate_prompt(notes_dir, config):
 
         while True:
             item = chat_q_out.get(timeout=3)
-            if "候选" in str(item) or "选择" in str(item):
+            if item == "__AWAIT_INPUT__":
                 break
             if item in ("__DONE__", "__ERROR__"):
+                break
+
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if item == "__SELECT_DEFAULT__":
                 break
 
         user_q_in.put("__CANCEL__")
@@ -894,6 +961,505 @@ def test_discuss_and_ingest_chat_history_in_candidate_prompt(notes_dir, config):
         t.join(timeout=3)
 
     assert "Focus on OpenAI" in seen_candidate_prompt.get("user", "")
+
+
+def test_discuss_and_ingest_emits_input_request_after_discussion_turn(notes_dir, config):
+    note = notes_dir / "test.md"
+    note.write_text("OpenAI and DeepSeek", encoding="utf-8")
+
+    chat_q_out = queue.Queue()
+    user_q_in = queue.Queue()
+    stream_call = [0]
+
+    def fake_stream(_cfg, messages, **_kw):
+        stream_call[0] += 1
+        if stream_call[0] == 1:
+            yield "Which topic should I focus on?"
+        else:
+            yield "Ready now. [READY_TO_INGEST]"
+
+    with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
+         patch("llm.wiki_engine.chat", return_value='{"summary": "S.", "candidates": []}'):
+
+        def _run():
+            discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            )
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+        items = []
+        while True:
+            item = chat_q_out.get(timeout=1)
+            items.append(item)
+            if item == "__AWAIT_INPUT__":
+                break
+
+        assert "Which topic" in "".join(str(item) for item in items)
+
+        user_q_in.put("Focus on OpenAI")
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if item == "__AWAIT_INPUT__":
+                break
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if item == "__SELECT_DEFAULT__":
+                break
+        user_q_in.put("__CANCEL__")
+        t.join(timeout=3)
+
+
+def test_discuss_and_ingest_marker_does_not_auto_generate_candidates(notes_dir, config):
+    note = notes_dir / "test.md"
+    note.write_text("OpenAI and DeepSeek", encoding="utf-8")
+
+    chat_q_out = queue.Queue()
+    user_q_in = queue.Queue()
+    chat_calls = []
+
+    def fake_stream(_cfg, messages, **_kw):
+        yield "I can discuss this. [READY_TO_INGEST]"
+
+    def fake_chat(_cfg, messages):
+        chat_calls.append(messages)
+        return '{"summary": "S.", "candidates": []}'
+
+    with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
+         patch("llm.wiki_engine.chat", side_effect=fake_chat):
+
+        t = threading.Thread(
+            target=lambda: discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            ),
+            daemon=True,
+        )
+        t.start()
+
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if item == "__AWAIT_INPUT__":
+                break
+
+        assert chat_calls == []
+
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if isinstance(item, tuple) and item[0] == "__CANDIDATES__":
+                break
+
+        user_q_in.put("__CANCEL__")
+        t.join(timeout=3)
+        assert len(chat_calls) == 1
+
+
+def test_discuss_and_ingest_ok_advances_to_candidates(notes_dir, config):
+    note = notes_dir / "test.md"
+    note.write_text("OpenAI and DeepSeek", encoding="utf-8")
+
+    chat_q_out = queue.Queue()
+    user_q_in = queue.Queue()
+
+    def fake_stream(_cfg, messages, **_kw):
+        yield "I can discuss this. [READY_TO_INGEST]"
+
+    def fake_chat(_cfg, messages):
+        return '{"summary": "S.", "candidates": []}'
+
+    with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
+         patch("llm.wiki_engine.chat", side_effect=fake_chat):
+
+        t = threading.Thread(
+            target=lambda: discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            ),
+            daemon=True,
+        )
+        t.start()
+
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if item == "__AWAIT_INPUT__":
+                break
+
+        user_q_in.put("ok")
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if isinstance(item, tuple) and item[0] == "__CANDIDATES__":
+                break
+
+        user_q_in.put("__CANCEL__")
+        t.join(timeout=3)
+
+
+def test_discuss_and_ingest_candidate_updates_drive_plan_generation(notes_dir, config):
+    note = notes_dir / "test.md"
+    note.write_text("OpenAI builds GPT. DeepSeek is mentioned.", encoding="utf-8")
+
+    chat_q_out = queue.Queue()
+    user_q_in = queue.Queue()
+    captured = {}
+
+    def fake_stream(_cfg, messages, **_kw):
+        yield "I found OpenAI and DeepSeek."
+
+    candidate_json = (
+        '{"summary": "AI notes.",'
+        ' "candidates": ['
+        '{"kind": "entity", "slug": "openai", "name": "OpenAI",'
+        ' "reason": "Main topic", "confidence": 0.9, "action_hint": "create"},'
+        '{"kind": "entity", "slug": "deepseek", "name": "DeepSeek",'
+        ' "reason": "Mentioned only", "confidence": 0.8, "action_hint": "create"}'
+        ']}'
+    )
+    plan_json = (
+        '{"actions": [{"action": "create", "path": "entities/openai.md",'
+        ' "title": "OpenAI", "reason": "selected", "contribution": "Builds GPT."}]}'
+    )
+    call_n = [0]
+
+    def fake_chat(_cfg, messages):
+        call_n[0] += 1
+        if call_n[0] == 1:
+            return candidate_json
+        return plan_json
+
+    def fake_build_write_plan(**kwargs):
+        captured["selected_paths"] = kwargs["selected_paths"]
+        captured["user_requested_source_read"] = kwargs["user_requested_source_read"]
+        return [[object()]]
+
+    with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
+         patch("llm.wiki_engine.chat", side_effect=fake_chat), \
+         patch("llm.wiki_engine._build_write_plan", side_effect=fake_build_write_plan):
+
+        t = threading.Thread(
+            target=lambda: discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            ),
+            daemon=True,
+        )
+        t.start()
+
+        while chat_q_out.get(timeout=3) != "__AWAIT_INPUT__":
+            pass
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if isinstance(item, tuple) and item[0] == "__CANDIDATES__":
+                candidates = item[1]
+                break
+        assert {c["path"] for c in candidates} == {
+            "entities/openai.md", "entities/deepseek.md",
+        }
+
+        user_q_in.put({
+            "type": "candidate_update",
+            "path": "entities/deepseek.md",
+            "selected": False,
+        })
+        user_q_in.put({
+            "type": "candidate_update",
+            "path": "entities/openai.md",
+            "deep": True,
+        })
+        user_q_in.put({"type": "command", "command": "generate_plan"})
+
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if isinstance(item, tuple) and item[0] == "__PLAN__":
+                break
+
+        user_q_in.put("__CANCEL__")
+        t.join(timeout=3)
+
+    assert captured == {
+        "selected_paths": ["entities/openai.md"],
+        "user_requested_source_read": True,
+    }
+
+
+def test_discuss_and_ingest_candidate_plan_intent_text_generates_plan(notes_dir, config):
+    note = notes_dir / "test.md"
+    note.write_text("OpenAI builds GPT. DeepSeek is mentioned.", encoding="utf-8")
+
+    chat_q_out = queue.Queue()
+    user_q_in = queue.Queue()
+    captured = {}
+
+    def fake_stream(_cfg, messages, **_kw):
+        yield "I found OpenAI and DeepSeek."
+
+    candidate_json = (
+        '{"summary": "AI notes.",'
+        ' "candidates": ['
+        '{"kind": "entity", "slug": "openai", "name": "OpenAI",'
+        ' "reason": "Main topic", "confidence": 0.9, "action_hint": "create"},'
+        '{"kind": "entity", "slug": "deepseek", "name": "DeepSeek",'
+        ' "reason": "Mentioned only", "confidence": 0.8, "action_hint": "create"}'
+        ']}'
+    )
+    plan_json = (
+        '{"actions": [{"action": "create", "path": "entities/openai.md",'
+        ' "title": "OpenAI", "reason": "selected", "contribution": "Builds GPT."}]}'
+    )
+    responses = [candidate_json, plan_json]
+
+    def fake_chat(_cfg, messages):
+        return responses.pop(0)
+
+    def fake_build_write_plan(**kwargs):
+        captured["selected_paths"] = kwargs["selected_paths"]
+        return [[object()]]
+
+    with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
+         patch("llm.wiki_engine.chat", side_effect=fake_chat), \
+         patch("llm.wiki_engine._build_write_plan", side_effect=fake_build_write_plan):
+
+        t = threading.Thread(
+            target=lambda: discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            ),
+            daemon=True,
+        )
+        t.start()
+
+        while chat_q_out.get(timeout=3) != "__AWAIT_INPUT__":
+            pass
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if item == "__SELECT_DEFAULT__":
+                break
+
+        user_q_in.put({
+            "type": "candidate_update",
+            "path": "entities/deepseek.md",
+            "selected": False,
+        })
+        user_q_in.put("根据选择的页面进行下一步规划")
+
+        plan_event = None
+        for _ in range(20):
+            try:
+                item = chat_q_out.get(timeout=0.5)
+            except queue.Empty:
+                break
+            if isinstance(item, tuple) and item[0] == "__PLAN__":
+                plan_event = item
+                break
+
+        user_q_in.put("__CANCEL__")
+        t.join(timeout=3)
+
+    assert plan_event is not None
+    assert captured["selected_paths"] == ["entities/openai.md"]
+
+
+def test_discuss_and_ingest_plan_update_executes_modified_action(notes_dir, config):
+    note = notes_dir / "test.md"
+    note.write_text("OpenAI builds GPT.", encoding="utf-8")
+
+    chat_q_out = queue.Queue()
+    user_q_in = queue.Queue()
+
+    def fake_stream(_cfg, messages, **_kw):
+        yield "I found OpenAI."
+
+    candidate_json = (
+        '{"summary": "AI notes.",'
+        ' "candidates": [{"kind": "entity", "slug": "openai", "name": "OpenAI",'
+        ' "reason": "Main topic", "confidence": 0.9, "action_hint": "create"}]}'
+    )
+    plan_json = (
+        '{"actions": [{"action": "create", "path": "entities/openai.md",'
+        ' "title": "OpenAI", "reason": "selected", "contribution": "Builds GPT."}]}'
+    )
+    call_n = [0]
+
+    def fake_chat(_cfg, messages):
+        call_n[0] += 1
+        if call_n[0] == 1:
+            return candidate_json
+        return plan_json
+
+    with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
+         patch("llm.wiki_engine.chat", side_effect=fake_chat):
+
+        t = threading.Thread(
+            target=lambda: discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            ),
+            daemon=True,
+        )
+        t.start()
+
+        while chat_q_out.get(timeout=3) != "__AWAIT_INPUT__":
+            pass
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if item == "__SELECT_DEFAULT__":
+                break
+        user_q_in.put({"type": "command", "command": "generate_plan"})
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if isinstance(item, tuple) and item[0] == "__PLAN__":
+                break
+
+        user_q_in.put({
+            "type": "plan_update",
+            "path": "entities/openai.md",
+            "action": "skip",
+        })
+        user_q_in.put({"type": "command", "command": "execute"})
+
+        final_items = []
+        while True:
+            item = chat_q_out.get(timeout=3)
+            final_items.append(item)
+            if item in ("__DONE__", "__ERROR__"):
+                break
+        t.join(timeout=3)
+
+    assert "__DONE__" in final_items
+    assert not (note.parent.parent / "wiki" / "entities" / "openai.md").exists()
+
+
+def test_discuss_and_ingest_revises_candidates_from_user_text(notes_dir, config):
+    note = notes_dir / "test.md"
+    note.write_text("OpenAI builds GPT. DeepSeek is mentioned.", encoding="utf-8")
+
+    chat_q_out = queue.Queue()
+    user_q_in = queue.Queue()
+
+    def fake_stream(_cfg, messages, **_kw):
+        yield "I found OpenAI and DeepSeek."
+
+    candidate_json = (
+        '{"summary": "AI notes.",'
+        ' "candidates": ['
+        '{"kind": "entity", "slug": "openai", "name": "OpenAI",'
+        ' "reason": "Main topic", "confidence": 0.9, "action_hint": "create"},'
+        '{"kind": "entity", "slug": "deepseek", "name": "DeepSeek",'
+        ' "reason": "Mentioned only", "confidence": 0.8, "action_hint": "create"}'
+        ']}'
+    )
+    revised_json = (
+        '{"summary": "AI notes.",'
+        ' "candidates": [{"kind": "entity", "slug": "deepseek", "name": "DeepSeek",'
+        ' "reason": "User wants DeepSeek only", "confidence": 0.9, "action_hint": "create"}]}'
+    )
+    responses = [candidate_json, revised_json]
+
+    def fake_chat(_cfg, messages):
+        return responses.pop(0)
+
+    with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
+         patch("llm.wiki_engine.chat", side_effect=fake_chat):
+
+        t = threading.Thread(
+            target=lambda: discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            ),
+            daemon=True,
+        )
+        t.start()
+
+        while chat_q_out.get(timeout=3) != "__AWAIT_INPUT__":
+            pass
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if isinstance(item, tuple) and item[0] == "__CANDIDATES__":
+                assert len(item[1]) == 2
+                break
+
+        user_q_in.put("只保留 DeepSeek")
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if isinstance(item, tuple) and item[0] == "__CANDIDATES__":
+                assert [c["path"] for c in item[1]] == ["entities/deepseek.md"]
+                break
+
+        user_q_in.put("__CANCEL__")
+        t.join(timeout=3)
+
+
+def test_discuss_and_ingest_revises_plan_from_user_text(notes_dir, config):
+    note = notes_dir / "test.md"
+    note.write_text("OpenAI builds GPT.", encoding="utf-8")
+
+    chat_q_out = queue.Queue()
+    user_q_in = queue.Queue()
+
+    def fake_stream(_cfg, messages, **_kw):
+        yield "I found OpenAI."
+
+    candidate_json = (
+        '{"summary": "AI notes.",'
+        ' "candidates": [{"kind": "entity", "slug": "openai", "name": "OpenAI",'
+        ' "reason": "Main topic", "confidence": 0.9, "action_hint": "create"}]}'
+    )
+    plan_json = (
+        '{"actions": [{"action": "create", "path": "entities/openai.md",'
+        ' "title": "OpenAI", "reason": "selected", "contribution": "Builds GPT."}]}'
+    )
+    revised_plan_json = (
+        '{"actions": [{"action": "light_link", "path": "entities/openai.md",'
+        ' "title": "OpenAI", "reason": "User asked for light link", "contribution": ""}]}'
+    )
+    responses = [candidate_json, plan_json, revised_plan_json]
+
+    def fake_chat(_cfg, messages):
+        return responses.pop(0)
+
+    with patch("llm.wiki_engine.chat_stream", side_effect=fake_stream), \
+         patch("llm.wiki_engine.chat", side_effect=fake_chat):
+
+        t = threading.Thread(
+            target=lambda: discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q_out, user_q=user_q_in,
+            ),
+            daemon=True,
+        )
+        t.start()
+
+        while chat_q_out.get(timeout=3) != "__AWAIT_INPUT__":
+            pass
+        user_q_in.put({"type": "command", "command": "generate_candidates"})
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if item == "__SELECT_DEFAULT__":
+                break
+        user_q_in.put({"type": "command", "command": "generate_plan"})
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if isinstance(item, tuple) and item[0] == "__PLAN__":
+                assert item[1][0]["action"] == "create"
+                break
+
+        user_q_in.put("改成轻关联")
+        while True:
+            item = chat_q_out.get(timeout=3)
+            if isinstance(item, tuple) and item[0] == "__PLAN__":
+                assert item[1][0]["action"] == "light_link"
+                break
+
+        user_q_in.put("__CANCEL__")
+        t.join(timeout=3)
 
 
 @pytest.fixture
@@ -1795,7 +2361,10 @@ def test_discuss_and_ingest_ready_flow(notes_dir, config):
          patch("llm.wiki_engine.chat", side_effect=fake_chat):
 
         def _run():
-            discuss_and_ingest(note, config, chat_q=chat_q, user_q=user_q)
+            discuss_and_ingest(
+                note, config, wiki_dir=notes_dir.parent / "wiki",
+                chat_q=chat_q, user_q=user_q,
+            )
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
@@ -1804,12 +2373,19 @@ def test_discuss_and_ingest_ready_flow(notes_dir, config):
         while True:
             item = chat_q.get(timeout=3)
             chunks.append(item)
-            if "候选" in str(item) or "选择" in str(item):
+            if item == "__AWAIT_INPUT__":
                 break
 
         assert any("OpenAI" in str(c) for c in chunks)
 
-        user_q.put("默认")
+        user_q.put({"type": "command", "command": "generate_candidates"})
+
+        while True:
+            item = chat_q.get(timeout=3)
+            if item == "__SELECT_DEFAULT__":
+                break
+
+        user_q.put({"type": "command", "command": "generate_plan"})
 
         while True:
             item = chat_q.get(timeout=3)

@@ -200,15 +200,17 @@ something, focus there. If they want to ignore something, drop it. If they ask \
 a question, answer it. Keep the conversation moving — don't repeat yourself.
 
 5. When the discussion has covered the important ground and the user seems \
-satisfied, append the marker [READY_TO_INGEST] to the END of your message. \
-This signals that you have enough guidance to proceed with formal extraction.
+satisfied, say that you are ready for the next step and include \
+[READY_TO_INGEST]. Do not start extraction yourself; the application will ask \
+the user to explicitly generate candidates.
 
 Rules:
 - Write in the same language as the source.
 - Keep each reply to 2-4 sentences. Be concise.
-- Don't output JSON or extraction results during discussion — that comes later.
+- Don't output JSON or extraction results during discussion. Only output the \
+[READY_TO_INGEST] control marker when the user has confirmed they are ready.
 - The user may say things like "继续" or "可以了" or "go ahead" — treat these \
-as confirmation to proceed. Append [READY_TO_INGEST] and thank them.
+as confirmation and briefly say you are ready for candidate generation.
 """
 
 
@@ -300,5 +302,67 @@ Rules:
 - When related source summaries are provided, use them to detect conflicts and decide \
 between update vs source_check.
 - Write contributions in the same language as the source.
+- Be factual. Do not invent information.
+"""
+
+
+INGEST_CANDIDATE_REVISION_SYSTEM = """\
+You are revising candidate wiki pages for an interactive ingest workflow.
+
+You will receive:
+(a) the source summary,
+(b) the current candidate list as JSON,
+(c) the user's latest instruction.
+
+Return EXACTLY one JSON object using the same shape as the candidate extractor:
+
+{
+  "summary": "<keep or improve the source summary>",
+  "candidates": [
+    {
+      "kind": "entity|concept",
+      "slug": "<kebab-case-slug>",
+      "name": "<display name>",
+      "reason": "<why this page should be created/updated>",
+      "confidence": <0.0-1.0>,
+      "action_hint": "create|update"
+    }
+  ]
+}
+
+Rules:
+- Preserve candidates the user did not ask to remove or change.
+- Apply the user's emphasis, ignore, merge, split, or rename instruction.
+- Do not write wiki content and do not execute the plan.
+- Be factual. Do not invent information.
+"""
+
+
+INGEST_PLAN_REVISION_SYSTEM = """\
+You are revising a pending wiki ingest write plan.
+
+You will receive:
+(a) the source summary,
+(b) the current write plan actions as JSON,
+(c) the user's latest instruction.
+
+Return EXACTLY one JSON object using this shape:
+
+{
+  "actions": [
+    {
+      "action": "create|update|light_link|skip|source_check",
+      "path": "<e.g. entities/openai.md>",
+      "title": "<display name>",
+      "reason": "<why this action>",
+      "contribution": "<contribution text, empty is allowed for skip/light_link>"
+    }
+  ]
+}
+
+Rules:
+- Preserve actions the user did not ask to change.
+- Apply requested action changes, skips, source checks, or lighter linking.
+- Do not write files.
 - Be factual. Do not invent information.
 """

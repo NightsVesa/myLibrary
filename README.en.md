@@ -94,14 +94,14 @@ pyinstaller build.spec --noconfirm
 pyinstaller build_ocr.spec --noconfirm
 ```
 
-## Release 1.0
+## Release 2.0
 
-Release 1.0 provides two Windows one-folder zip packages:
+Release 2.0 provides two Windows one-folder zip packages:
 
 | Package | OCR | Best for |
 | --- | --- | --- |
-| `myLibrary-release1.0-lite-windows.zip` | Not included | Notes, search, wiki, Q&A, graph, and health checks with a smaller download |
-| `myLibrary-release1.0-ocr-windows.zip` | Includes PaddleOCR, PaddlePaddle, and Chinese OCR models | Image OCR, scanned PDF OCR, and OCR from images inside documents |
+| `myLibrary-release2.0-lite-windows.zip` | Not included | Notes, search, wiki, Q&A, graph, and health checks with a smaller download |
+| `myLibrary-release2.0-ocr-windows.zip` | Includes PaddleOCR, PaddlePaddle, and Chinese OCR models | Image OCR, scanned PDF OCR, and OCR from images inside documents |
 
 After extracting, run:
 

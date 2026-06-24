@@ -1,5 +1,6 @@
 """Wiki health-check: static analysis + optional LLM audit."""
 
+import json
 import posixpath
 import re
 import time
@@ -8,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Generator
 
+import httpx
 import config as app_config
 from llm.client import LLMConfig, Message, chat
 from llm.graph_data import parse_wiki_graph
@@ -24,6 +26,20 @@ class LintFinding:
     priority: str = "P2"
     fixable: bool = False
     source: str = "static"  # "static" | "llm"
+
+
+@dataclass(frozen=True)
+class LintFixFile:
+    path: str
+    original: str
+    updated: str
+    issues: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LintFixPreview:
+    files: tuple[LintFixFile, ...]
+    summary: str = ""
 
 
 _PRIORITY_MAP: dict[str, str] = {
@@ -852,7 +868,19 @@ def llm_check(
         Message(role="system", content=LINT_SYSTEM),
         Message(role="user", content=user_content),
     ]
-    raw = chat(config, messages)
+    try:
+        raw = chat(config, messages)
+    except httpx.TimeoutException as exc:
+        yield LintFinding(
+            severity="warn",
+            kind="llm_timeout",
+            location="wiki",
+            message=f"LLM 体检超时: {exc}",
+            suggestion="静态检查结果已保留；请检查 LLM 服务状态，或调高 LLM_TIMEOUT 后重新体检。",
+            priority="P2",
+            source="llm",
+        )
+        return
     yield from _parse_llm_lint(raw)
 
 
@@ -973,6 +1001,10 @@ _HEADING_DRIFT_REPLACE = {
     "## Reference": "## Sources",
     "## References": "## Sources",
 }
+_REBUILD_ACTION_KINDS = frozenset({
+    "missing_index", "missing_index_section", "missing_file",
+    "unindexed_file", "duplicate_index",
+})
 
 
 def auto_fix(wiki_dir: Path, findings: list[LintFinding]) -> int:
@@ -1016,3 +1048,240 @@ def auto_fix(wiki_dir: Path, findings: list[LintFinding]) -> int:
             fixed += 1
 
     return fixed
+
+
+_LLM_FIX_SYSTEM = """You repair a local Markdown wiki.
+Return JSON only, with this shape:
+{"summary":"short summary","files":[{"path":"entities/example.md","edits":[{"old":"exact existing text","new":"replacement text"}],"issues":["kind"]}]}
+Rules:
+- Only modify Markdown files inside index.md, log.md, or wiki subdirectories sources/, entities/, concepts/, synthesis/.
+- Prefer edits. Each old value must be exact contiguous text copied from the current file.
+- Preserve useful existing information and add concise citations or cross-links when possible.
+- For every selected issue-target file shown under Current Files, return a file entry or explain in summary why it should not be changed.
+- Do not return a short fragment as full file content. A legacy content field is accepted only when it is a safe full replacement.
+- If an issue needs source material that is unavailable, add a brief note or placeholder section in the relevant wiki page rather than editing notes/.
+"""
+
+
+def _safe_preview_rel_path(wiki_dir: Path, raw_path: str) -> str:
+    rel = raw_path.replace("\\", "/").strip()
+    if not rel or rel.startswith("/") or re.match(r"^[A-Za-z]:", rel):
+        raise ValueError(f"Unsafe wiki path from LLM: {raw_path}")
+    parts = [part for part in rel.split("/") if part]
+    if any(part in (".", "..") for part in parts):
+        raise ValueError(f"Unsafe wiki path from LLM: {raw_path}")
+    rel = posixpath.normpath("/".join(parts))
+    if rel in ("", ".") or not rel.endswith(".md"):
+        raise ValueError(f"LLM fix path must be a Markdown file: {raw_path}")
+    first = rel.split("/", 1)[0]
+    if rel not in {"index.md", "log.md"} and first not in set(_WIKI_SUBDIRS):
+        raise ValueError(f"LLM fix path is outside wiki structure: {raw_path}")
+
+    root = wiki_dir.resolve()
+    target = (wiki_dir / Path(*rel.split("/"))).resolve()
+    if root != target and root not in target.parents:
+        raise ValueError(f"Unsafe wiki path from LLM: {raw_path}")
+    return rel
+
+
+def _extract_json_document(raw: str) -> str:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, count=1, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text, count=1)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("LLM did not return a JSON object")
+    return text[start:end + 1]
+
+
+def _finding_target_files(wiki_dir: Path, findings: list[LintFinding]) -> list[str]:
+    rels: list[str] = []
+    for f in findings:
+        candidates = [f.location]
+        if f.kind in _REBUILD_ACTION_KINDS or f.location in {"wiki", "index"}:
+            candidates.append("index.md")
+        if f.location == "log":
+            candidates.append("log.md")
+        for candidate in candidates:
+            try:
+                rel = _safe_preview_rel_path(wiki_dir, candidate)
+            except ValueError:
+                continue
+            if rel not in rels:
+                rels.append(rel)
+    return rels
+
+
+def _truncate_for_context(text: str, limit: int) -> str:
+    marker = "\n[... content truncated ...]"
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit <= len(marker):
+        return text[:limit]
+    return text[:limit - len(marker)].rstrip() + marker
+
+
+def _format_fix_context(wiki_dir: Path, findings: list[LintFinding]) -> str:
+    issue_lines = ["=== Issues ==="]
+    for i, f in enumerate(findings, 1):
+        issue_lines.append(
+            f"{i}. {f.priority} {f.severity} {f.kind} {f.location} | "
+            f"{f.message} | {f.suggestion}"
+        )
+    budget = app_config.WIKI_LINT_MAX_CHARS
+    issue_budget = max(400, int(budget * 0.35))
+    issue_text = _truncate_for_context("\n".join(issue_lines), issue_budget)
+
+    rels = _finding_target_files(wiki_dir, findings)
+    if not rels:
+        return _truncate_for_context(
+            f"{issue_text}\n\n=== Current Files ===\n(no directly editable wiki files found)",
+            budget,
+        )
+
+    prefix = f"{issue_text}\n\n=== Current Files ==="
+    header_len = sum(len(f"\n--- {rel} ---\n") for rel in rels)
+    content_budget = max(0, budget - len(prefix) - header_len)
+    per_file_budget = content_budget // max(1, len(rels))
+
+    parts = [prefix]
+    for rel in rels:
+        path = wiki_dir / Path(*rel.split("/"))
+        current = path.read_text(encoding="utf-8") if path.exists() else ""
+        parts.append(f"\n--- {rel} ---\n{_truncate_for_context(current, per_file_budget)}")
+    return _truncate_for_context("".join(parts), budget)
+
+
+_PAGE_LOCAL_FIX_KINDS = frozenset({
+    "no_sources", "temporal_claim", "stale_temporal", "stale_superseded",
+    "missing_xref", "shallow", "missing_frontmatter",
+    "frontmatter_type_mismatch", "heading_drift", "empty_link",
+    "broken_link", "one_way_related",
+})
+
+
+def _required_preview_files(wiki_dir: Path, findings: list[LintFinding]) -> list[str]:
+    rels: list[str] = []
+    for f in findings:
+        candidates: list[str]
+        if f.kind in _REBUILD_ACTION_KINDS or f.location in {"wiki", "index"}:
+            candidates = ["index.md"]
+        elif f.location == "log":
+            candidates = ["log.md"]
+        elif f.kind in _PAGE_LOCAL_FIX_KINDS or f.source == "llm":
+            candidates = [f.location]
+        else:
+            candidates = []
+        for candidate in candidates:
+            try:
+                rel = _safe_preview_rel_path(wiki_dir, candidate)
+            except ValueError:
+                continue
+            if (wiki_dir / Path(*rel.split("/"))).exists() and rel not in rels:
+                rels.append(rel)
+    return rels
+
+
+def _apply_llm_edits(original: str, edits: object, rel: str) -> str | None:
+    if edits is None:
+        return None
+    if not isinstance(edits, list):
+        raise ValueError(f"LLM edits must be a list for {rel}")
+    updated = original
+    used = False
+    for edit in edits:
+        if not isinstance(edit, dict):
+            raise ValueError(f"LLM edit must be an object for {rel}")
+        old = edit.get("old")
+        new = edit.get("new")
+        if not isinstance(old, str) or not isinstance(new, str) or not old:
+            raise ValueError(f"LLM edit must include non-empty old and string new for {rel}")
+        if old not in updated:
+            raise ValueError(f"LLM edit target not found in current file: {rel}")
+        updated = updated.replace(old, new, 1)
+        used = True
+    return updated if used else original
+
+
+def _nonempty_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _is_destructive_full_replacement(original: str, updated: str) -> bool:
+    original_body = original.strip()
+    if not original_body:
+        return False
+    original_lines = _nonempty_lines(original)
+    if len(original_body) < 200 and len(original_lines) < 8:
+        return False
+    if len(updated.strip()) >= len(original_body) * 0.7:
+        return False
+    kept = sum(1 for line in original_lines if line in updated)
+    return kept / max(1, len(original_lines)) < 0.5
+
+
+def build_llm_fix_preview(
+    wiki_dir: Path,
+    findings: list[LintFinding],
+    config: LLMConfig,
+) -> LintFixPreview:
+    if not config.api_key:
+        raise ValueError("API key is not configured")
+    if not findings:
+        return LintFixPreview(files=())
+
+    messages = [
+        Message(role="system", content=_LLM_FIX_SYSTEM),
+        Message(role="user", content=_format_fix_context(wiki_dir, findings)),
+    ]
+    raw = chat(config, messages)
+    try:
+        payload = json.loads(_extract_json_document(raw))
+    except json.JSONDecodeError as exc:
+        raise ValueError("LLM returned invalid fix JSON") from exc
+
+    files: list[LintFixFile] = []
+    for item in payload.get("files", []):
+        if not isinstance(item, dict):
+            continue
+        rel = _safe_preview_rel_path(wiki_dir, str(item.get("path", "")))
+        path = wiki_dir / Path(*rel.split("/"))
+        original = path.read_text(encoding="utf-8") if path.exists() else ""
+        updated = _apply_llm_edits(original, item.get("edits"), rel)
+        if updated is None:
+            updated = item.get("content")
+        if not isinstance(updated, str):
+            continue
+        if updated == original:
+            continue
+        if _is_destructive_full_replacement(original, updated):
+            raise ValueError(f"LLM fix for {rel} removed too much existing content")
+        issues_raw = item.get("issues", [])
+        issues = tuple(str(x) for x in issues_raw) if isinstance(issues_raw, list) else ()
+        files.append(LintFixFile(path=rel, original=original, updated=updated, issues=issues))
+
+    returned = {item.path for item in files}
+    missing = [rel for rel in _required_preview_files(wiki_dir, findings) if rel not in returned]
+    if missing:
+        raise ValueError(f"LLM did not return fixes for selected file(s): {', '.join(missing)}")
+
+    summary = payload.get("summary", "")
+    return LintFixPreview(files=tuple(files), summary=str(summary) if summary else "")
+
+
+def apply_llm_fix_preview(wiki_dir: Path, preview: LintFixPreview) -> int:
+    written = 0
+    for item in preview.files:
+        rel = _safe_preview_rel_path(wiki_dir, item.path)
+        path = wiki_dir / Path(*rel.split("/"))
+        current = path.read_text(encoding="utf-8") if path.exists() else ""
+        if current != item.original:
+            raise ValueError(f"File changed since preview: {rel}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(item.updated, encoding="utf-8")
+        written += 1
+    return written

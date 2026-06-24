@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Generator
+from typing import Any, Callable, Generator
 
 import logging as _logging
 import posixpath
@@ -327,7 +327,12 @@ def _execute_write_plan(
             page_related = related_map.get(act.path) if related_map else None
 
             try:
-                if act.action == "source_check":
+                effective_action = act.action
+                contribution = act.contribution or act.reason or plan.source_summary
+                if effective_action in ("source_check", "light_link") and not target.exists():
+                    effective_action = "create"
+
+                if effective_action == "source_check":
                     if target.exists():
                         _add_source_link_only(
                             target, plan.source_filename, from_filename=act.path,
@@ -335,22 +340,22 @@ def _execute_write_plan(
                     flagged.append(f"{act.title} ({act.path}): {act.reason}")
                     continue
 
-                if act.action == "create":
+                if effective_action == "create":
                     _new_page(
                         target,
                         page_title=act.title,
-                        contribution=act.contribution,
+                        contribution=contribution,
                         source_filename=plan.source_filename,
                         page_type=page_type,
                         related=page_related,
                     )
                     ok += 1
-                elif act.action == "update":
+                elif effective_action == "update":
                     if not target.exists():
                         _new_page(
                             target,
                             page_title=act.title,
-                            contribution=act.contribution,
+                            contribution=contribution,
                             source_filename=plan.source_filename,
                             page_type=page_type,
                             related=page_related,
@@ -359,13 +364,13 @@ def _execute_write_plan(
                         _merge_page(
                             target,
                             page_title=act.title,
-                            contribution=act.contribution,
+                            contribution=contribution,
                             source_filename=plan.source_filename,
                             config=config,
                             related=page_related,
                         )
                     ok += 1
-                elif act.action == "light_link":
+                elif effective_action == "light_link":
                     if target.exists():
                         _add_source_link_only(
                             target, plan.source_filename, from_filename=act.path,
@@ -379,8 +384,8 @@ def _execute_write_plan(
                     title=act.title,
                     filename=act.path,
                     summary=(
-                        act.contribution.split("\n")[0][:app_config.WIKI_INDEX_SUMMARY_LEN]
-                        if act.contribution else "(linked)"
+                        contribution.split("\n")[0][:app_config.WIKI_INDEX_SUMMARY_LEN]
+                        if contribution else "(linked)"
                     ),
                 ))
             except Exception:
@@ -664,6 +669,159 @@ def _parse_user_selection(
     if not selected:
         selected = {i for i, c in enumerate(candidates) if c.default_selected}
     return selected, wants_sources
+
+
+def _candidate_dict(
+    candidate: IngestCandidate,
+    *,
+    selected: bool,
+    deep: bool,
+) -> dict[str, Any]:
+    return {
+        "kind": candidate.kind,
+        "path": candidate.path,
+        "title": candidate.title,
+        "reason": candidate.reason,
+        "confidence": candidate.confidence,
+        "default_selected": candidate.default_selected,
+        "action_hint": candidate.action_hint,
+        "selected": selected,
+        "deep": deep,
+    }
+
+
+def _action_dict(action: IngestWriteAction) -> dict[str, str]:
+    return {
+        "action": action.action,
+        "path": action.path,
+        "title": action.title,
+        "reason": action.reason,
+        "contribution": action.contribution,
+    }
+
+
+def _build_candidate_revision_messages(
+    source_summary: str,
+    candidates: list[IngestCandidate],
+    instruction: str,
+) -> list[Message]:
+    import json
+    from llm.prompts import INGEST_CANDIDATE_REVISION_SYSTEM
+
+    payload = {
+        "summary": source_summary,
+        "candidates": [
+            {
+                "kind": c.kind,
+                "slug": Path(c.path).stem,
+                "name": c.title,
+                "reason": c.reason,
+                "confidence": c.confidence,
+                "action_hint": c.action_hint,
+            }
+            for c in candidates
+        ],
+    }
+    return [
+        Message(role="system", content=INGEST_CANDIDATE_REVISION_SYSTEM),
+        Message(
+            role="user",
+            content=(
+                "=== Source summary ===\n"
+                f"{source_summary}\n\n"
+                "=== Current candidates JSON ===\n"
+                f"{json.dumps(payload, ensure_ascii=False)}\n\n"
+                "=== User instruction ===\n"
+                f"{instruction}"
+            ),
+        ),
+    ]
+
+
+def _build_plan_revision_messages(
+    source_summary: str,
+    actions: list[IngestWriteAction],
+    instruction: str,
+) -> list[Message]:
+    import json
+    from llm.prompts import INGEST_PLAN_REVISION_SYSTEM
+
+    payload = {"actions": [_action_dict(a) for a in actions]}
+    return [
+        Message(role="system", content=INGEST_PLAN_REVISION_SYSTEM),
+        Message(
+            role="user",
+            content=(
+                "=== Source summary ===\n"
+                f"{source_summary}\n\n"
+                "=== Current write plan JSON ===\n"
+                f"{json.dumps(payload, ensure_ascii=False)}\n\n"
+                "=== User instruction ===\n"
+                f"{instruction}"
+            ),
+        ),
+    ]
+
+
+def _coerce_ingest_user_event(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    text = str(raw)
+    if text == "__CANCEL__":
+        return {"type": "command", "command": "cancel"}
+    if text in ("confirm", "__CONFIRM__"):
+        return {"type": "command", "command": "execute"}
+    return {"type": "input", "text": text}
+
+
+_DISCUSSION_PROCEED_TEXTS = {
+    "继续",
+    "可以了",
+    "开始",
+    "开始提取",
+    "确认",
+    "好的",
+    "好",
+    "ok",
+    "okay",
+    "go ahead",
+    "proceed",
+}
+
+
+def _looks_like_generate_plan_request(text: str) -> bool:
+    compact = "".join(text.strip().lower().split())
+    if not compact:
+        return False
+    if compact in {
+        "下一步",
+        "下一阶段",
+        "继续",
+        "生成计划",
+        "生成写入计划",
+        "写入计划",
+        "开始规划",
+        "重新规划",
+    }:
+        return True
+    zh_plan = (
+        "写入计划",
+        "生成计划",
+        "下一步",
+        "下一阶段",
+        "进行规划",
+        "进一步规划",
+        "下一步规划",
+    )
+    if any(token in compact for token in zh_plan):
+        return True
+    if ("计划" in compact or "规划" in compact) and any(
+        token in compact for token in ("选择", "选中", "已选", "页面", "候选")
+    ):
+        return True
+    return "plan" in compact and any(
+        token in compact for token in ("generate", "next", "selected", "selection")
+    )
 
 
 _MANAGED_HEADINGS = frozenset({"## Sources", "## 来源", "## Related"})
@@ -1836,148 +1994,204 @@ def discuss_and_ingest(
     chat_q: queue.Queue[str],
     user_q: queue.Queue[str],
 ) -> Path | None:
-    """Interactive ingest: 5-step workflow on a worker thread.
-
-    1. Discussion loop — stream LLM discussion with user
-    2. Candidate extraction — LLM identifies pages to create/update
-    3. User focus selection — user picks candidates + optional source read
-    4. Write plan generation — batched LLM calls after deep-reading pages
-    5. Confirmed execution — user approves, plan is executed
-    """
+    """Interactive ingest review loop on a worker thread."""
     wiki = wiki_dir if wiki_dir is not None else app_config.WIKI_DIR
     _ensure_subdirs(wiki)
     source_text = _read_note_source(note_path)
     title = note_path.stem.replace("_", " ")
     history: list[dict[str, str]] = []
-
-    # ── Step 1: Discussion loop ────────────────────────────────────────
-    while True:
-        messages = _build_discuss_messages(source_text, history, wiki_dir=wiki)
-        full_reply: list[str] = []
-        for chunk in chat_stream(config, messages):
-            full_reply.append(chunk)
-            chat_q.put(chunk)
-        reply_text = "".join(full_reply)
-        history.append({"role": "assistant", "content": reply_text})
-
-        if "[READY_TO_INGEST]" in reply_text:
-            break
-
-        user_input = user_q.get()
-        if user_input == "__CANCEL__":
-            chat_q.put("__DONE__")
-            return None
-        history.append({"role": "user", "content": user_input})
-
-    # ── Step 2: Candidate extraction ───────────────────────────────────
-    chat_q.put("\n\n正在分析候选页面...\n")
-    candidate_messages = _build_ingest_extract_messages(
-        source_text, title, history, wiki_dir=wiki,
-    )
-    raw_candidates = chat(config, candidate_messages)
-    summary, candidates = _parse_candidates(raw_candidates)
-
-    if not summary:
-        summary = title
-
-    # Canonicalize slugs
-    entity_slugs, concept_slugs = _collect_existing_slugs(wiki)
-    canonicalized: list[IngestCandidate] = []
-    for c in candidates:
-        existing = entity_slugs if c.kind == "entity" else concept_slugs
-        raw_slug = c.path.split("/")[-1].replace(".md", "")
-        canon = _canonical_slug(raw_slug, existing)
-        prefix = "entities" if c.kind == "entity" else "concepts"
-        canon_path = f"{prefix}/{canon}.md"
-        action_hint = "update" if (wiki / canon_path).exists() else "create"
-        canonicalized.append(IngestCandidate(
-            kind=c.kind, path=canon_path, title=c.title,
-            reason=c.reason, confidence=c.confidence,
-            default_selected=c.default_selected, action_hint=action_hint,
-        ))
-    candidates = canonicalized
-
-    display_text = _format_candidates_for_display(candidates)
-    chat_q.put(display_text)
-    chat_q.put("__SELECT_DEFAULT__")
-
-    # ── Step 3: User focus selection ───────────────────────────────────
-    user_selection = user_q.get()
-    if user_selection == "__CANCEL__":
-        chat_q.put("__DONE__")
-        return None
-
-    selected_indices, user_wants_sources = _parse_user_selection(
-        user_selection, candidates,
-    )
-    selected_paths = [
-        candidates[i].path
-        for i in sorted(selected_indices)
-        if i < len(candidates)
-    ]
-
-    # ── Step 4: Deep read + write plan (batched) ───────────────────────
-    chat_q.put("\n正在深度阅读已选页面，生成写入计划...\n")
-
-    plan_batches = _build_write_plan(
-        source_summary=summary,
-        candidates=candidates,
-        selected_paths=selected_paths,
-        wiki_dir=wiki,
-        user_requested_source_read=user_wants_sources,
-    )
-
+    summary = title
+    candidates: list[IngestCandidate] = []
+    selected_paths: set[str] = set()
+    deep_paths: set[str] = set()
     all_actions: list[IngestWriteAction] = []
-    for batch_messages in plan_batches:
-        raw_plan = chat(config, batch_messages)
-        batch_actions = _parse_write_plan(raw_plan)
-        all_actions.extend(batch_actions)
 
-    if not all_actions:
-        all_actions = [
-            IngestWriteAction(
-                action=c.action_hint,
-                path=c.path,
-                title=c.title,
-                reason=c.reason,
-                contribution=c.reason,
-            )
-            for c in candidates
-            if c.path in selected_paths
+    def queue_stage(stage: str, status: str) -> None:
+        chat_q.put(("__STAGE__", stage, status))
+
+    def queue_input(mode: str, actions: list[str]) -> None:
+        chat_q.put(("__AWAIT_INPUT__", mode, actions))
+        chat_q.put("__AWAIT_INPUT__")
+
+    def canonicalize(raw_candidates: list[IngestCandidate]) -> list[IngestCandidate]:
+        entity_slugs, concept_slugs = _collect_existing_slugs(wiki)
+        result: list[IngestCandidate] = []
+        for c in raw_candidates:
+            kind = c.kind if c.kind in ("entity", "concept") else "concept"
+            existing = entity_slugs if kind == "entity" else concept_slugs
+            raw_slug = c.path.split("/")[-1].replace(".md", "")
+            if not raw_slug:
+                raw_slug = _slugify(c.title)
+            canon = _canonical_slug(raw_slug, existing)
+            prefix = "entities" if kind == "entity" else "concepts"
+            canon_path = f"{prefix}/{canon}.md"
+            action_hint = "update" if (wiki / canon_path).exists() else "create"
+            result.append(IngestCandidate(
+                kind=kind, path=canon_path, title=c.title,
+                reason=c.reason, confidence=c.confidence,
+                default_selected=c.default_selected, action_hint=action_hint,
+            ))
+        return result
+
+    def queue_candidates() -> None:
+        chat_q.put((
+            "__CANDIDATES__",
+            [
+                _candidate_dict(
+                    c,
+                    selected=c.path in selected_paths,
+                    deep=c.path in deep_paths,
+                )
+                for c in candidates
+            ],
+        ))
+        chat_q.put("__SELECT_DEFAULT__")
+
+    def queue_plan() -> None:
+        chat_q.put(_format_plan_for_display(all_actions))
+        chat_q.put(("__PLAN__", [_action_dict(a) for a in all_actions]))
+        chat_q.put("__READY__")
+
+    def apply_candidate_update(event: dict[str, Any]) -> None:
+        path = str(event.get("path", ""))
+        if not path and str(event.get("index", "")).isdigit():
+            idx = int(event["index"]) - 1
+            if 0 <= idx < len(candidates):
+                path = candidates[idx].path
+        if not path:
+            return
+        if "selected" in event:
+            if bool(event["selected"]):
+                selected_paths.add(path)
+            else:
+                selected_paths.discard(path)
+                deep_paths.discard(path)
+        if "deep" in event:
+            if bool(event["deep"]):
+                selected_paths.add(path)
+                deep_paths.add(path)
+            else:
+                deep_paths.discard(path)
+
+    def apply_plan_update(event: dict[str, Any]) -> None:
+        path = str(event.get("path", ""))
+        new_action = str(event.get("action", ""))
+        valid = {"create", "update", "light_link", "skip", "source_check"}
+        if not path or new_action not in valid:
+            return
+        for idx, action in enumerate(all_actions):
+            if action.path == path:
+                all_actions[idx] = IngestWriteAction(
+                    action=new_action,
+                    path=action.path,
+                    title=action.title,
+                    reason=str(event.get("reason") or action.reason),
+                    contribution=str(event.get("contribution") or action.contribution),
+                )
+                return
+
+    def generate_candidates() -> None:
+        nonlocal summary, candidates, selected_paths, deep_paths
+        queue_stage("candidates_generating", "正在分析候选页面")
+        chat_q.put("\n\n正在分析候选页面...\n")
+        candidate_messages = _build_ingest_extract_messages(
+            source_text, title, history, wiki_dir=wiki,
+        )
+        raw_candidates = chat(config, candidate_messages)
+        next_summary, next_candidates = _parse_candidates(raw_candidates)
+        summary = next_summary or summary or title
+        candidates = canonicalize(next_candidates)
+        selected_paths = {c.path for c in candidates if c.default_selected}
+        deep_paths = set()
+        queue_stage("candidates", "请审阅候选页面")
+        queue_candidates()
+
+    def revise_candidates(instruction: str) -> None:
+        nonlocal summary, candidates, selected_paths, deep_paths
+        queue_stage("candidates_revising", "正在按你的要求修改候选页面")
+        raw = chat(config, _build_candidate_revision_messages(
+            summary, candidates, instruction,
+        ))
+        next_summary, next_candidates = _parse_candidates(raw)
+        if next_summary:
+            summary = next_summary
+        if next_candidates:
+            old_selected = set(selected_paths)
+            old_deep = set(deep_paths)
+            candidates = canonicalize(next_candidates)
+            selected_paths = {
+                c.path for c in candidates
+                if c.path in old_selected or c.default_selected
+            }
+            deep_paths = {c.path for c in candidates if c.path in old_deep}
+        queue_stage("candidates", "请审阅候选页面")
+        queue_candidates()
+
+    def generate_plan() -> None:
+        nonlocal all_actions
+        queue_stage("plan_generating", "正在生成写入计划")
+        chat_q.put("\n正在深度阅读已选页面，生成写入计划...\n")
+        ordered_selected = [c.path for c in candidates if c.path in selected_paths]
+        plan_batches = _build_write_plan(
+            source_summary=summary,
+            candidates=candidates,
+            selected_paths=ordered_selected,
+            wiki_dir=wiki,
+            user_requested_source_read=bool(deep_paths),
+        )
+        next_actions: list[IngestWriteAction] = []
+        for batch_messages in plan_batches:
+            raw_plan = chat(config, batch_messages)
+            next_actions.extend(_parse_write_plan(raw_plan))
+        if not next_actions:
+            next_actions = [
+                IngestWriteAction(
+                    action=c.action_hint,
+                    path=c.path,
+                    title=c.title,
+                    reason=c.reason,
+                    contribution=c.reason,
+                )
+                for c in candidates
+                if c.path in selected_paths
+            ]
+        all_actions = next_actions
+        queue_stage("plan", "请确认写入计划")
+        queue_plan()
+
+    def revise_plan(instruction: str) -> None:
+        nonlocal all_actions
+        queue_stage("plan_revising", "正在按你的要求修改写入计划")
+        revised = _parse_write_plan(chat(
+            config,
+            _build_plan_revision_messages(summary, all_actions, instruction),
+        ))
+        if revised:
+            all_actions = revised
+        queue_stage("plan", "请确认写入计划")
+        queue_plan()
+
+    def execute_plan() -> Path | None:
+        queue_stage("executing", "正在执行写入计划")
+        chat_q.put("\n正在执行写入计划...\n")
+        source_related = [
+            (a.title, a.path) for a in all_actions
+            if a.action in ("create", "update")
         ]
-
-    plan_display = _format_plan_for_display(all_actions)
-    chat_q.put(plan_display)
-    chat_q.put("__READY__")
-
-    # ── Step 5: Confirmed execution ────────────────────────────────────
-    confirm = user_q.get()
-    if confirm == "__CANCEL__":
-        chat_q.put("__DONE__")
-        return None
-
-    chat_q.put("\n正在执行写入计划...\n")
-
-    source_related = [
-        (a.title, a.path) for a in all_actions
-        if a.action in ("create", "update")
-    ]
-    source_page, source_filename = _write_source_page(
-        wiki, note_name=note_path.name, title=title,
-        summary=summary, related=source_related,
-    )
-    _persist_source_index_entry(
-        wiki, title=title, source_filename=source_filename, summary=summary,
-    )
-
-    plan = IngestWritePlan(
-        source_summary=summary,
-        source_filename=source_filename,
-        actions=all_actions,
-        user_focus=selected_paths,
-        referenced_source_summaries=[],
-    )
-    try:
+        source_page, source_filename = _write_source_page(
+            wiki, note_name=note_path.name, title=title,
+            summary=summary, related=source_related,
+        )
+        _persist_source_index_entry(
+            wiki, title=title, source_filename=source_filename, summary=summary,
+        )
+        plan = IngestWritePlan(
+            source_summary=summary,
+            source_filename=source_filename,
+            actions=all_actions,
+            user_focus=[c.path for c in candidates if c.path in selected_paths],
+            referenced_source_summaries=[],
+        )
         ok, failed, flagged = _execute_write_plan(plan, config, wiki_dir=wiki)
         parts: list[str] = []
         if ok:
@@ -1985,12 +2199,118 @@ def discuss_and_ingest(
         if failed:
             parts.append(f"⚠ {failed} 个页面写入失败")
         if flagged:
-            parts.append(f"🔍 {len(flagged)} 个页面需核查:\n" + "\n".join(f"  - {f}" for f in flagged))
+            parts.append(
+                f"🔍 {len(flagged)} 个页面需核查:\n"
+                + "\n".join(f"  - {f}" for f in flagged)
+            )
+        if not parts:
+            parts.append("没有页面需要写入")
         chat_q.put("\n" + "\n".join(parts) + "\n")
         chat_q.put("__DONE__")
         return source_page
-    except Exception:
-        _logging.exception("write plan execution failed for %s", note_path)
-        chat_q.put("\n❌ 执行失败\n")
-        chat_q.put("__ERROR__")
-        return None
+
+    stage = "discussion"
+    queue_stage("discussion", "正在探究源材料")
+
+    while True:
+        if stage == "discussion":
+            messages = _build_discuss_messages(source_text, history, wiki_dir=wiki)
+            full_reply: list[str] = []
+            for chunk in chat_stream(config, messages):
+                clean = chunk.replace("[READY_TO_INGEST]", "")
+                full_reply.append(clean)
+                if clean:
+                    chat_q.put(clean)
+            history.append({"role": "assistant", "content": "".join(full_reply)})
+            queue_input("discussion", ["reply", "generate_candidates", "cancel"])
+            event = _coerce_ingest_user_event(user_q.get())
+            command = str(event.get("command", ""))
+            if command == "cancel":
+                chat_q.put("__DONE__")
+                return None
+            if command in ("generate_candidates", "continue", "next"):
+                generate_candidates()
+                stage = "candidates"
+                continue
+            text = str(event.get("text", "")).strip()
+            if text.lower() in _DISCUSSION_PROCEED_TEXTS:
+                generate_candidates()
+                stage = "candidates"
+                continue
+            if text:
+                history.append({"role": "user", "content": text})
+            continue
+
+        if stage == "candidates":
+            queue_input("candidates", [
+                "candidate_update", "generate_plan", "revise", "cancel",
+            ])
+            event = _coerce_ingest_user_event(user_q.get())
+            command = str(event.get("command", ""))
+            if command == "cancel":
+                chat_q.put("__DONE__")
+                return None
+            if command == "generate_plan":
+                generate_plan()
+                stage = "plan"
+                continue
+            if command in ("discussion", "back_to_discussion"):
+                stage = "discussion"
+                queue_stage("discussion", "继续探究源材料")
+                continue
+            if event.get("type") == "candidate_update":
+                apply_candidate_update(event)
+                queue_candidates()
+                continue
+            text = str(event.get("text", "")).strip()
+            if text:
+                selected_indices, wants_sources = _parse_user_selection(text, candidates)
+                if _looks_like_generate_plan_request(text):
+                    generate_plan()
+                    stage = "plan"
+                elif text.lower() in ("默认", "default", "all", "全部", "*") or any(
+                    ch.isdigit() for ch in text
+                ) or text.startswith("-"):
+                    selected_paths = {
+                        candidates[i].path
+                        for i in sorted(selected_indices)
+                        if i < len(candidates)
+                    }
+                    if wants_sources:
+                        deep_paths.update(selected_paths)
+                    generate_plan()
+                    stage = "plan"
+                else:
+                    revise_candidates(text)
+            continue
+
+        if stage == "plan":
+            queue_input("plan", [
+                "plan_update", "execute", "back_to_candidates", "revise", "cancel",
+            ])
+            event = _coerce_ingest_user_event(user_q.get())
+            command = str(event.get("command", ""))
+            if command == "cancel":
+                chat_q.put("__DONE__")
+                return None
+            if command in ("execute", "confirm"):
+                try:
+                    return execute_plan()
+                except Exception:
+                    _logging.exception("write plan execution failed for %s", note_path)
+                    chat_q.put("\n❌ 执行失败\n")
+                    chat_q.put("__ERROR__")
+                    return None
+            if command in ("back_to_candidates", "candidates"):
+                stage = "candidates"
+                queue_stage("candidates", "请审阅候选页面")
+                queue_candidates()
+                continue
+            if event.get("type") == "plan_update":
+                apply_plan_update(event)
+                queue_plan()
+                continue
+            text = str(event.get("text", "")).strip()
+            if text:
+                revise_plan(text)
+            continue
