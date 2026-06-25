@@ -193,7 +193,13 @@ export function IngestPage({ token }: IngestPageProps) {
           } else if (event.type === 'input_request') {
             flushLog()
             setInputMode(event.mode || 'discussion')
-            setStage(event.mode === 'discussion' ? 'chat' : 'input')
+            if (event.mode === 'candidates') {
+              setStage('select')
+            } else if (event.mode === 'plan') {
+              setStage('plan')
+            } else {
+              setStage(event.mode === 'discussion' ? 'chat' : 'input')
+            }
           } else if (event.type === 'select') {
             flushLog()
             setStage('select')
@@ -380,7 +386,11 @@ export function IngestPage({ token }: IngestPageProps) {
               disabled={!canType}
               onChange={(event) => setInputText(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') sendInput(inputText)
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  sendInput(inputText)
+                }
               }}
               placeholder={canType ? '继续提问、强调重点或要求修改' : '等待当前步骤完成...'}
             />

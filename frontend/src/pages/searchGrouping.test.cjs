@@ -208,3 +208,24 @@ test('inbox files expose a delete action', () => {
   assert.match(uploadPage, /deleteInboxItem/)
   assert.match(uploadPage, />\s*删除\s*<\/Button>/)
 })
+
+test('ingest keeps candidate review visible while waiting for candidate commands', () => {
+  const ingestPage = fs.readFileSync(path.join(__dirname, 'IngestPage.tsx'), 'utf8')
+  const inputRequestBlock = ingestPage
+    .split("} else if (event.type === 'input_request') {", 2)[1]
+    .split("} else if (event.type === 'select') {", 1)[0]
+
+  assert.match(inputRequestBlock, /event\.mode === 'candidates'/)
+  assert.match(inputRequestBlock, /setStage\('select'\)/)
+})
+
+test('ingest enter submit does not bubble to panel window controls', () => {
+  const ingestPage = fs.readFileSync(path.join(__dirname, 'IngestPage.tsx'), 'utf8')
+  const keydownBlock = ingestPage
+    .split('onKeyDown={(event) => {', 2)[1]
+    .split('}}', 1)[0]
+
+  assert.match(keydownBlock, /event\.preventDefault\(\)/)
+  assert.match(keydownBlock, /event\.stopPropagation\(\)/)
+  assert.match(keydownBlock, /sendInput\(inputText\)/)
+})
