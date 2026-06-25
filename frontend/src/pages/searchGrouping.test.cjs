@@ -198,3 +198,13 @@ test('inbox ingest actions stay compact inside file cards', () => {
   assert.match(css, /\.inbox-item\s+button\s*\{[^}]*width:\s*auto;/s)
   assert.match(css, /\.inbox-item\s+button\s*\{[^}]*white-space:\s*nowrap;/s)
 })
+
+test('inbox files expose a delete action', () => {
+  const api = fs.readFileSync(path.join(__dirname, '../api.ts'), 'utf8')
+  const uploadPage = fs.readFileSync(path.join(__dirname, 'UploadPage.tsx'), 'utf8')
+
+  assert.match(api, /export function deleteInboxItem\(token: string, path: string\)/)
+  assert.match(api, /method:\s*'DELETE'/)
+  assert.match(uploadPage, /deleteInboxItem/)
+  assert.match(uploadPage, />\s*删除\s*<\/Button>/)
+})

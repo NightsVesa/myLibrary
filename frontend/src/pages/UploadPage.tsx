@@ -1,6 +1,7 @@
 import { ChangeEvent, DragEvent, useEffect, useState } from 'react'
 import { Button, Card, Dialog, Divider, Loading } from 'zelda-hyrule-ui'
 import {
+  deleteInboxItem,
   listInbox,
   navigatePanel,
   previewInboxItem,
@@ -86,6 +87,24 @@ export function UploadPage({ token }: UploadPageProps) {
     navigatePanel('ingest', token, { paths: JSON.stringify(paths) })
   }
 
+  async function deleteInbox(item: FilePayload) {
+    setBusy(true)
+    setError('')
+    try {
+      await deleteInboxItem(token, item.path)
+      if (selected?.path === item.path) {
+        setSelected(null)
+        setPreview('')
+      }
+      setStatus(`已删除 ${item.name}`)
+      await refreshInbox()
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '删除失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function onInput(event: ChangeEvent<HTMLInputElement>) {
     void choose(event.target.files?.[0] ?? null)
   }
@@ -153,16 +172,29 @@ export function UploadPage({ token }: UploadPageProps) {
                   <span className="result-name">{item.name}</span>
                   <span className="result-snippet">{item.path}</span>
                 </div>
-                <Button
-                  variant="sheikah"
-                  size="small"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    ingestPaths([item.path])
-                  }}
-                >
-                  收录
-                </Button>
+                <div className="inbox-actions">
+                  <Button
+                    variant="sheikah"
+                    size="small"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      ingestPaths([item.path])
+                    }}
+                  >
+                    收录
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="small"
+                    loading={busy}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void deleteInbox(item)
+                    }}
+                  >
+                    删除
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
