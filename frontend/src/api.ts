@@ -162,6 +162,13 @@ export function previewInboxItem(token: string, path: string) {
   return request<InboxPreviewPayload>(`/api/inbox/preview?${params}`, token)
 }
 
+export function deleteInboxItem(token: string, path: string) {
+  const params = new URLSearchParams({ path })
+  return request<FilePayload>(`/api/inbox?${params}`, token, {
+    method: 'DELETE',
+  })
+}
+
 export function searchNotes(token: string, mode: SearchMode, query: string) {
   const params = new URLSearchParams({ mode })
   if (query.trim()) params.set('q', query.trim())

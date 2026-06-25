@@ -507,6 +507,43 @@ def test_upload_preview_save_and_inbox_roundtrip(tmp_path):
     assert inbox_preview.json()["data"]["content"].startswith("# Source")
 
 
+def test_delete_inbox_item_removes_note_file(tmp_path):
+    client = _client(tmp_path)
+    note = tmp_path / "source.md"
+    note.write_text("# Source\nbody", encoding="utf-8")
+
+    response = client.delete(
+        "/api/inbox",
+        params={"path": str(note)},
+        headers=_auth(),
+    )
+    inbox = client.get("/api/inbox", headers=_auth())
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"path": str(note), "name": "source.md"}
+    assert not note.exists()
+    assert "source.md" not in [item["name"] for item in inbox.json()["data"]["items"]]
+
+
+def test_delete_inbox_item_rejects_notes_not_in_inbox(tmp_path):
+    wiki_dir = tmp_path / "wiki"
+    sources_dir = wiki_dir / "sources"
+    sources_dir.mkdir(parents=True)
+    note = tmp_path / "source.md"
+    note.write_text("# Source\nbody", encoding="utf-8")
+    (sources_dir / "summary_source.md").write_text("# Source summary\n", encoding="utf-8")
+    client = _client(tmp_path, wiki_dir=wiki_dir)
+
+    response = client.delete(
+        "/api/inbox",
+        params={"path": str(note)},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 404
+    assert note.exists()
+
+
 def test_query_stream_returns_meta_thinking_chunks_and_done(monkeypatch, tmp_path):
     def fake_query(question, config, *, wiki_dir=None, notes_dir=None, on_meta=None, on_thinking=None):
         assert question == "What is Alpha?"

@@ -64,7 +64,7 @@ from storage.note_meta import (
     set_favorite,
     set_tags,
 )
-from storage.note_store import save_note, save_raw_file
+from storage.note_store import delete_note, save_note, save_raw_file
 
 _log = logging.getLogger(__name__)
 
@@ -787,6 +787,16 @@ def create_app(
     def inbox_preview(path: str = Query(...), _auth: None = Depends(require_token)):
         note = _resolve_note_path(path, notes_dir)
         return ok({"path": str(note), "name": note.name, "content": _read_inbox_preview(note)})
+
+    @app.delete("/api/inbox")
+    def delete_inbox_item(path: str = Query(...), _auth: None = Depends(require_token)):
+        note = _resolve_note_path(path, notes_dir)
+        inbox_paths = {item.resolve() for item in _find_uningested_notes(notes_dir, wiki_dir)}
+        if note.resolve() not in inbox_paths:
+            raise HTTPException(status_code=404, detail="Inbox item not found")
+        payload = _file_payload(note)
+        delete_note(note)
+        return ok(payload)
 
     @app.get("/api/search")
     def search(

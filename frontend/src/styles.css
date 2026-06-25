@@ -482,6 +482,12 @@ h2 {
   gap: 6px;
 }
 
+.inbox-actions {
+  display: flex;
+  justify-self: end;
+  gap: 8px;
+}
+
 .inbox-item button {
   width: auto;
   min-width: 84px;
