@@ -9,6 +9,7 @@ from web_panel.webview_entry import run_webview
 
 
 def _configure_logging() -> None:
+    logging.getLogger("pdfminer.pdffont").setLevel(logging.ERROR)
     base_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
     log_dir = base_dir / "logs"
     try:
