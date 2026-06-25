@@ -680,6 +680,7 @@ def create_app(
     wiki_dir: Path | None = None,
     ingest_runner: Callable[..., Path | None] | None = None,
     consume_panel_route: Callable[[], str | tuple[str, dict[str, str]] | None] | None = None,
+    on_panel_activity: Callable[[], None] | None = None,
 ) -> FastAPI:
     notes_dir = Path(notes_dir)
     default_wiki_dir = getattr(app_config, "WIKI_DIR", notes_dir.parent / "wiki")
@@ -698,6 +699,8 @@ def create_app(
     def require_token(x_panel_token: str | None = Header(default=None)) -> None:
         if not panel_token or x_panel_token != panel_token:
             raise HTTPException(status_code=401, detail="Invalid panel token")
+        if on_panel_activity is not None:
+            on_panel_activity()
 
     def require_media_token(
         token: str | None = Query(default=None),
@@ -705,6 +708,8 @@ def create_app(
     ) -> None:
         if not panel_token or (x_panel_token != panel_token and token != panel_token):
             raise HTTPException(status_code=401, detail="Invalid panel token")
+        if on_panel_activity is not None:
+            on_panel_activity()
 
     @app.exception_handler(HTTPException)
     async def _http_exception_handler(_request, exc: HTTPException):

@@ -95,3 +95,27 @@ def test_panel_api_server_clears_port_when_start_health_check_fails(monkeypatch,
 
     with pytest.raises(RuntimeError):
         _ = server.base_url
+
+
+def test_panel_api_server_passes_activity_callback_to_app(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_create_app(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("web_panel.server.create_app", fake_create_app)
+
+    def on_activity():
+        pass
+
+    server = PanelApiServer(
+        notes_dir=tmp_path,
+        panel_token="secret",
+        on_panel_activity=on_activity,
+    )
+
+    app = server._create_app()
+
+    assert app is not None
+    assert captured["on_panel_activity"] is on_activity

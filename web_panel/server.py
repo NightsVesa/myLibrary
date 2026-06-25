@@ -53,12 +53,14 @@ class PanelApiServer:
         frontend_dir: Path | None = None,
         open_reader: Callable[[Path, str], None] | None = None,
         wiki_dir: Path | None = None,
+        on_panel_activity: Callable[[], None] | None = None,
     ) -> None:
         self.notes_dir = Path(notes_dir)
         self.wiki_dir = Path(wiki_dir) if wiki_dir is not None else None
         self.panel_token = panel_token
         self.frontend_dir = Path(frontend_dir) if frontend_dir is not None else None
         self.open_reader = open_reader
+        self.on_panel_activity = on_panel_activity
         self.host = "127.0.0.1"
         self.port: int | None = None
         self._server: uvicorn.Server | None = None
@@ -93,6 +95,17 @@ class PanelApiServer:
             self._pending_route = None
         return command
 
+    def _create_app(self):
+        return create_app(
+            notes_dir=self.notes_dir,
+            wiki_dir=self.wiki_dir,
+            panel_token=self.panel_token,
+            frontend_dir=self.frontend_dir,
+            open_reader=self.open_reader,
+            consume_panel_route=self.consume_panel_route,
+            on_panel_activity=self.on_panel_activity,
+        )
+
     def start(self) -> None:
         if self.is_running:
             return
@@ -100,14 +113,7 @@ class PanelApiServer:
             self.stop()
 
         self.port = _free_loopback_port()
-        app = create_app(
-            notes_dir=self.notes_dir,
-            wiki_dir=self.wiki_dir,
-            panel_token=self.panel_token,
-            frontend_dir=self.frontend_dir,
-            open_reader=self.open_reader,
-            consume_panel_route=self.consume_panel_route,
-        )
+        app = self._create_app()
         config = uvicorn.Config(
             app,
             host=self.host,

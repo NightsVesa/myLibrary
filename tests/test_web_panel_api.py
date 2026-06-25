@@ -45,6 +45,26 @@ def test_health_uses_uniform_response_shape(tmp_path):
     assert response.json()["error"] is None
 
 
+def test_panel_route_marks_panel_activity_after_auth(tmp_path):
+    activity: list[str] = []
+    client = _client(tmp_path, on_panel_activity=lambda: activity.append("active"))
+
+    response = client.get("/api/panel-route", headers=_auth())
+
+    assert response.status_code == 200
+    assert activity == ["active"]
+
+
+def test_rejected_panel_requests_do_not_mark_activity(tmp_path):
+    activity: list[str] = []
+    client = _client(tmp_path, on_panel_activity=lambda: activity.append("active"))
+
+    response = client.get("/api/panel-route", headers=_auth("bad-token"))
+
+    assert response.status_code == 401
+    assert activity == []
+
+
 def test_unhandled_api_errors_use_uniform_json_response(monkeypatch, tmp_path):
     def fail_search(*_args, **_kwargs):
         raise RuntimeError("search exploded")

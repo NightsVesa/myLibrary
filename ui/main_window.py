@@ -1076,6 +1076,7 @@ class MainWindow:
                     panel_token=self._panel_token,
                     frontend_dir=frontend_dir,
                     open_reader=self._open_reader_from_react,
+                    on_panel_activity=self._mark_web_panel_activity,
                 )
                 try:
                     server.start()
@@ -1086,6 +1087,10 @@ class MainWindow:
                 self._panel_api_server = server
 
             return self._panel_api_server
+
+    def _mark_web_panel_activity(self) -> None:
+        if self._web_panel_process is not None and self._web_panel_process.poll() is None:
+            self._schedule_web_panel_idle_cleanup()
 
     def _open_reader_from_react(self, path: Path, query: str) -> None:
         self.root.after(

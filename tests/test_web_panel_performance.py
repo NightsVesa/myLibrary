@@ -40,6 +40,17 @@ def test_main_window_can_reuse_live_web_panel_without_hiding_closed_windows():
     assert "reserve_loopback_port" not in source
 
 
+def test_main_window_refreshes_web_panel_idle_timeout_from_panel_activity():
+    source = (ROOT / "ui" / "main_window.py").read_text(encoding="utf-8")
+
+    assert "on_panel_activity=self._mark_web_panel_activity" in source
+    assert "def _mark_web_panel_activity(self) -> None:" in source
+    activity_body = source.split("def _mark_web_panel_activity(self) -> None:", 1)[1].split(
+        "    def _open_reader_from_react", 1,
+    )[0]
+    assert "_schedule_web_panel_idle_cleanup()" in activity_body
+
+
 def test_drag_drop_routes_to_react_ingest_only_when_web_panel_is_live():
     source = (ROOT / "ui" / "main_window.py").read_text(encoding="utf-8")
     drop_body = source.split("def _on_files_dropped", 1)[1].split("    # ── ingest feedback", 1)[0]
